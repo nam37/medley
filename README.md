@@ -108,7 +108,7 @@ sweeps across the `medley` badge and the status line says what's happening.
 | w | wait 2 seconds and show what the page changed by itself |
 | y n | accept or dismiss a `confirm()` the page opened (a `prompt()` asks for its answer) |
 | ? | show all keys |
-| q | quit: asks "Quit medley?", then whether to keep the browser session running for other clients |
+| q | quit: asks "Quit medley?", then "Close the background browser session?" (n keeps it running for other clients) |
 | Q, Ctrl+C | quit at once, keeping the session running |
 
 In a field prompt, Enter types and submits (like pressing Enter in the field),
@@ -129,7 +129,9 @@ the same.
   it again). When text needs more rows than its box had on the page, everything
   below moves down together, so blocks that lined up on the page still line up.
   Things that were off the page to the side, such as a carousel's hidden
-  slides, aren't drawn, as on the page. The `#` and `──` markup of the text
+  slides, aren't drawn, as on the page. A dialog floating over the page (a
+  modal, a consent notice) is drawn as a bordered card where it floated,
+  hiding what it covers, as on the page. The `#` and `──` markup of the text
   format is left out, and tables are drawn as ruled grids with a bold header
   row. A grid grows wider than the table was on the page when its text needs
   the room, but only into free space; otherwise its cells wrap.
@@ -232,6 +234,11 @@ returns an image of the page for what text can't show.
 
 Blocks that sit side by side on the page share a line. Hidden content is
 dropped, label text is folded into its control's name, and passwords are masked.
+An open modal (a cookie or terms notice, a sign-up box) usually comes last, as
+`── dialog "…" ──`, since pages put it at the end. Clicking something it covers
+fails with the modal's buttons, e.g. `ref 17 is covered by a dialog "Legal Terms
+and Privacy"; close it first: [323 button "Agree"]`; in the terminal UI, that
+button is selected instead, so Enter presses it.
 
 After an action you get one of:
 

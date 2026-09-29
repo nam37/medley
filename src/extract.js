@@ -61,10 +61,25 @@
   };
 
   /** "rgb(a)(…)" as #rrggbb, or null when (nearly) transparent. */
-  function hex(color) {
+  // A CSS color as #rrggbb, or null when it's (nearly) transparent. A
+  // see-through color is mixed with `under` (#rrggbb), as it shows over it.
+  function hex(color, under) {
     const m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/.exec(color || '');
-    if (!m || (m[4] !== undefined && +m[4] < 0.05)) return null;
-    return '#' + [m[1], m[2], m[3]].map((v) => (+v).toString(16).padStart(2, '0')).join('');
+    const alpha = m && m[4] !== undefined ? +m[4] : 1;
+    if (!m || alpha < 0.05) return null;
+    let rgb = [+m[1], +m[2], +m[3]];
+    if (alpha < 1 && under) {
+      const u = [1, 3, 5].map((i) => parseInt(under.slice(i, i + 2), 16));
+      rgb = rgb.map((v, i) => Math.round(v * alpha + u[i] * (1 - alpha)));
+    }
+    return '#' + rgb.map((v) => v.toString(16).padStart(2, '0')).join('');
+  }
+
+  // A modal's backdrop: see-through, and fixed over the whole window. It only
+  // dims the page behind the modal.
+  function backdrop(n, cs) {
+    const m = /^rgba\(.*,\s*([\d.]+)\)$/.exec(cs.backgroundColor);
+    return !!m && +m[1] < 1 && cs.position === 'fixed' && n.r[2] >= 0.9 * innerWidth && n.r[3] >= 0.9 * innerHeight;
   }
 
   // How an element looks, for the terminal UI's advanced grid: text color,
@@ -73,7 +88,7 @@
   function paint(n, cs) {
     const fg = hex(cs.color);
     if (fg) n.fg = fg;
-    const bg = hex(cs.backgroundColor);
+    const bg = backdrop(n, cs) ? null : hex(cs.backgroundColor, canvas);
     if (bg) n.bg = bg;
     if (+cs.fontWeight >= 600) n.fw = 1;
     const sides = ['Top', 'Right', 'Bottom', 'Left'];
@@ -263,6 +278,28 @@
     return s.replace(/\t/g, '    ');
   }
 
+  // Some pages mark a modal's wrapper aria-hidden by mistake (cnn.com's consent
+  // dialog). The modal still covers the page and has to be answered, so keep it.
+  const DIALOG = 'dialog[open], [role=dialog], [role=alertdialog], [aria-modal=true]';
+  function holdsDialog(el) {
+    for (const d of el.querySelectorAll(DIALOG)) {
+      if (d.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return true;
+    }
+    return false;
+  }
+
+  // Whether an element floats over the page: a modal <dialog>, or anything fixed in place.
+  const overlays = [];
+  function floats(el) {
+    try {
+      if (el.matches(':modal')) return true;
+    } catch {}
+    for (let a = el; a; a = a.parentElement || a.getRootNode().host) {
+      if (styleOf(a).position === 'fixed') return true;
+    }
+    return false;
+  }
+
   function childNodesOf(el) {
     if (el.shadowRoot) return el.shadowRoot.childNodes;
     if (el.localName === 'slot') {
@@ -295,7 +332,7 @@
 
     const el = node;
     const tag = el.localName;
-    if (SKIP.has(tag) || el.getAttribute('aria-hidden') === 'true') return null;
+    if (SKIP.has(tag) || (el.getAttribute('aria-hidden') === 'true' && !holdsDialog(el))) return null;
     const cs = styleOf(el);
     if (cs.display === 'none') return null;
     // Catches content-visibility:hidden too (closed <details>, hidden=until-found).
@@ -399,6 +436,9 @@
       n.lm = lm[0];
       if (lm[1]) n.lmn = lm[1];
     }
+    // A dialog floating over the page (a modal, a consent notice) gets drawn
+    // over it in the terminal UI's advanced grid, not in among what it covers.
+    if (!inline && el.matches(DIALOG) && floats(el)) n.ov = `${M.doc}:${overlays.push(el)}`;
     if (/^(ul|ol|menu)$/.test(tag) || role === 'list') {
       n.list = tag === 'ol' ? 'ol' : 'ul';
       if (tag === 'ol' && el.start !== 1) n.start = el.start;
@@ -420,6 +460,10 @@
     return n;
   }
 
+  // The page's own background: the body's, the root's, or the browser default.
+  const canvas = hex(getComputedStyle(document.body || document.documentElement).backgroundColor) ||
+    hex(getComputedStyle(document.documentElement).backgroundColor) || '#ffffff';
+
   const root = document.body ? walk(document.body, { vis: true, pre: false, cursor: '', inRef: false, noText: false }) : null;
 
   // Every visible picture, labelled or not, with where it is. Kept apart from
@@ -428,13 +472,12 @@
   for (const img of document.querySelectorAll('img, video, canvas, svg[role=img]')) {
     const r = rectOf(img);
     if (r[2] < 24 || r[3] < 24 || !img.checkVisibility({ visibilityProperty: true })) continue;
-    pics.push({ r, alt: clean(img.getAttribute('alt') || img.getAttribute('aria-label') || '') });
+    const pic = { r, alt: clean(img.getAttribute('alt') || img.getAttribute('aria-label') || '') };
+    const ov = overlays.findLastIndex((o) => o.contains(img)); // the innermost floating dialog it's in
+    if (ov >= 0) pic.ov = `${M.doc}:${ov + 1}`;
+    pics.push(pic);
     if (pics.length >= 200) break;
   }
-  // The page's own background: the body's, the root's, or the browser default.
-  const canvas = hex(getComputedStyle(document.body || document.documentElement).backgroundColor) ||
-    hex(getComputedStyle(document.documentElement).backgroundColor) || '#ffffff';
-
   return {
     doc: M.doc,
     url: location.href,

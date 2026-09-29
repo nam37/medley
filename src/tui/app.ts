@@ -95,7 +95,7 @@ const HELP = [
   'w                  wait 2 seconds and show what the page changed by itself',
   'y n                accept or dismiss a dialog the page opened',
   'Esc                clear the selection and the search',
-  'q                  quit; asks first, then whether to keep the browser session',
+  'q                  quit; asks first, then whether to close the browser session',
   'Q, Ctrl+C          quit at once, keeping the session running',
   '',
   'In a field prompt: Enter types and submits, Tab types only, Esc cancels.',
@@ -130,6 +130,7 @@ export class App {
   private promptError = ''; // why the prompt's last input was refused
   private secret = ''; // what's typed into a password prompt; the input only shows dots
   private quitting: 'no' | 'confirm' | 'session' = 'no'; // which quit question is showing
+  private dialogPending = ''; // a "covered by a dialog" error to act on once the view catches up
   private stopped = false;
   private picturesFor: string | null = null; // the document whose screenshot was asked for
   private digits = '';
@@ -263,7 +264,7 @@ export class App {
       }
       return;
     }
-    if (this.backend.stale?.()) this.say(`${STALE_HINT}: q, y, n, then start the UI again`, 'warn');
+    if (this.backend.stale?.()) this.say(`${STALE_HINT}: q, y, y, then start the UI again`, 'warn');
   }
 
   /** Whether this UI started a session in the background that never opened a page (to stop on quit). */
@@ -313,7 +314,14 @@ export class App {
         this.show({ dialog: null, page: null });
         this.say('no session is running; press o to open a page', 'warn');
       } else if (text.startsWith('unknown command')) {
-        this.say(`${text}: ${STALE_HINT} (q, y, n, then start the UI again)`, 'error');
+        this.say(`${text}: ${STALE_HINT} (q, y, y, then start the UI again)`, 'error');
+      } else if (text.includes('is covered by a dialog')) {
+        this.say(text.split('\n')[0], 'error');
+        // Not in the view yet (it opened after the last look): look again, then go to it.
+        if (!this.goToDialog(text)) {
+          this.dialogPending = text;
+          this.refreshQueued = true;
+        }
       } else {
         this.say(text.split('\n')[0], 'error');
         // Refs went stale under us (another client navigated); catch up.
@@ -334,6 +342,11 @@ export class App {
 
   private apply(cmd: string, reply: Reply, quiet = false, args: Record<string, unknown> = {}) {
     if (reply.state) this.show(reply.state);
+    if (this.dialogPending && cmd === 'snapshot') {
+      const error = this.dialogPending;
+      this.dialogPending = '';
+      this.goToDialog(error);
+    }
     if (quiet) return;
     if (cmd === 'screenshot') return this.say(saveScreenshot(reply.text, args.path as string | undefined), 'ok');
     const lines = reply.text.split('\n');
@@ -735,6 +748,38 @@ export class App {
   }
 
   /** Open a ref from the list: as if it were chosen on the page. */
+  /**
+   * A modal is in the way. Pages put it last, far from where you were, so go
+   * to it and select the button the error named (or the dialog's first button).
+   */
+  private goToDialog(error: string): boolean {
+    const named = /close it first: (.*)$/m.exec(error)?.[1] ?? '';
+    const ref = [...named.matchAll(/\[(\d+)/g)].map((m) => Number(m[1])).find((n) => this.page.hasRef(n)) ??
+      this.dialogControl(/a dialog "(.*?)"/.exec(error)?.[1]);
+    if (ref === undefined) return false;
+    this.page.select(ref);
+    const label = this.current?.labels.find(([n]) => n === ref)?.[1] ?? `[${ref}]`;
+    const dialog = /is covered by (a dialog(?: ".*?")?)/.exec(error)?.[1] ?? 'a dialog';
+    this.say(`${dialog} is in the way · Enter presses ${label}`, 'warn');
+    return true;
+  }
+
+  /** The first button of the page's dialog (the one with this name, if it has one), else its first control. */
+  private dialogControl(name?: string): number | undefined {
+    const body = this.current?.body ?? [];
+    const isDialog = (l: string) => /^── (?:.* › )?dialog\b/.test(l);
+    let start = name ? body.findIndex((l) => isDialog(l) && l.includes(`"${name}"`)) : -1;
+    if (start < 0) start = body.findIndex(isDialog);
+    if (start < 0) return undefined;
+    let end = body.findIndex((l, i) => i > start && l.startsWith('── '));
+    if (end < 0) end = body.length;
+    const inside = (this.current?.labels ?? [])
+      .map(([n, label]) => ({ n, label, line: this.page.hasRef(n)?.line ?? -1 }))
+      .filter((r) => r.line > start && r.line < end)
+      .sort((a, b) => a.line - b.line);
+    return (inside.find((r) => / button /.test(r.label)) ?? inside[0])?.n;
+  }
+
   private pickRef(item: RefItem) {
     this.closeRefs();
     const ref = this.page.hasRef(item.ref);
@@ -866,7 +911,7 @@ export class App {
     this.say(`Enter to ${verb} · h to hover`, 'info');
   }
 
-  /** q asks "Quit medley?", then whether to keep the session. y/n answer; any other key stays. */
+  /** q asks "Quit medley?", then whether to close the session. y/n answer; any other key stays. */
   private quitKey(key: KeyEvent) {
     const step = this.quitting;
     this.quitting = 'no';
@@ -874,9 +919,9 @@ export class App {
       if (!this.current) return this.quit(); // no session to ask about
       this.quitting = 'session';
     } else if (step === 'session' && key.name === 'y') {
-      return this.quit();
-    } else if (step === 'session' && key.name === 'n') {
       return void this.stopAndQuit();
+    } else if (step === 'session' && key.name === 'n') {
+      return this.quit();
     }
     this.drawStatus();
   }
@@ -900,7 +945,7 @@ export class App {
     if (this.page.drawsPage) detail = ' · the page as laid out, with its colors and pictures';
     else if (mode === 'advanced' && this.current && !this.current.visual) {
       // A session started before advanced grid existed sends no page layout.
-      detail = ' · this session is too old to send the page layout; restart it (q, y, n, then tui)';
+      detail = ' · this session is too old to send the page layout; restart it (q, y, y, then tui)';
     } else if (mode !== 'none') {
       detail = columns ? ` · ${columns} ${columns === 1 ? 'group' : 'groups'} in columns` : ' · nothing here fits side by side at this width';
     }
@@ -1052,7 +1097,7 @@ export class App {
     let left: Segment[];
     const question = {
       confirm: ' Quit medley? y to quit, any other key to stay',
-      session: ' Keep the browser session running? y keep it · n stop it · any other key to stay',
+      session: ' Close the background browser session? y close it · n keep it running · any other key to stay',
     };
     if (this.quitting !== 'no') left = [{ text: question[this.quitting], fg: THEME.warn }];
     else if (this.prompt && this.promptError) left = [{ text: ` ${this.promptError}`, fg: THEME.error }];

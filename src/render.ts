@@ -35,6 +35,7 @@ export interface El {
   alt?: string;
   kind?: string;
   frame?: string; // a cross-origin iframe's frame id, until the session reads its content in (session.ts)
+  ov?: string; // a dialog floating over the page (see Visual.layers)
   fg?: string; // text color, background, border (a card), bold: how it looks
   bg?: string;
   bd?: string;
@@ -52,7 +53,7 @@ export interface PageModel {
   sy: number;
   bg?: string; // the page's background and text colors
   fg?: string;
-  pics?: { r: Rect; alt: string }[];
+  pics?: { r: Rect; alt: string; ov?: string }[];
   root: El | null;
 }
 
@@ -77,15 +78,21 @@ export interface LayoutGroup {
   cells: { start: number; end: number; w: number }[];
 }
 
-/** Where things were on the page and how they looked, for drawing it (page pixels). */
+/**
+ * Where things were on the page and how they looked, for drawing it (page
+ * pixels). Dialogs floating over the page (modals, consent notices) are
+ * layers: `layer` on a box, background or picture is its number in `layers`,
+ * counting from 1, and what has none is the page itself.
+ */
 export interface Visual {
   width: number;
   canvas: string; // page background color
   text: string; // page text color
-  boxes: { r: Rect; fg?: string; bold?: 1; table?: 1 }[]; // a table's lines are its rows, `| a | b |`
+  boxes: { r: Rect; fg?: string; bold?: 1; table?: 1; layer?: number }[]; // a table's lines are its rows, `| a | b |`
   lines: number[][]; // for each body line, the boxes its text came from
-  decor: { r: Rect; bg?: string; bd?: string }[]; // backgrounds and card borders
-  images: { r: Rect; alt: string }[];
+  decor: { r: Rect; bg?: string; bd?: string; layer?: number }[]; // backgrounds and card borders
+  images: { r: Rect; alt: string; layer?: number }[];
+  layers: { r: Rect; bg?: string; bd?: string }[];
   refs: Record<number, { fg?: string; bg?: string }>;
 }
 
@@ -149,7 +156,11 @@ export function renderParts(page: PageModel): Rendered {
     boxes: r.boxes,
     lines: lineBoxes,
     decor: r.decor,
-    images: page.pics ?? [],
+    images: (page.pics ?? []).map(({ r: box, alt, ov }) => {
+      const layer = ov ? r.layerOf.get(ov) : undefined;
+      return layer ? { r: box, alt, layer } : { r: box, alt };
+    }),
+    layers: r.layers,
     refs: r.refStyles,
   };
   return { header: [page.title || '(untitled)', meta], body, links, hrefs, labels: r.labels, layout, visual };
@@ -167,8 +178,11 @@ class Renderer {
   labels = new Map<number, string>();
   boxes: Visual['boxes'] = [];
   decor: Visual['decor'] = [];
+  layers: Visual['layers'] = [];
+  layerOf = new Map<string, number>(); // a floating dialog's id from the page → its layer
   refStyles: Visual['refs'] = {};
   private groups = 0;
+  private layer = 0; // the layer being rendered, 0 for the page
 
   // ---- tokens -------------------------------------------------------------
 
@@ -207,8 +221,10 @@ class Renderer {
   /** Tag the lines this element produced itself (inner blocks tagged theirs already) with its box. */
   private tag(lines: string[], n: El): string[] {
     if (!n.r) return lines; // its parent's box will do
-    const id = this.boxes.push({ r: n.r, fg: n.fg, bold: n.fw, table: n.rows ? 1 : undefined }) - 1;
-    if (n.bg || n.bd) this.decor.push({ r: n.r, bg: n.bg, bd: n.bd });
+    const layer = this.layer || undefined;
+    const id = this.boxes.push({ r: n.r, fg: n.fg, bold: n.fw, table: n.rows ? 1 : undefined, layer }) - 1;
+    // A layer's own background and border are the layer's (drawn with it as a card).
+    if ((n.bg || n.bd) && !n.ov) this.decor.push({ r: n.r, bg: n.bg, bd: n.bd, layer });
     return lines.map((l) => (l.trim() && !isMarker(l) && !l.includes('\u0001') ? `\u0001${id}\u0002${l}` : l));
   }
 
@@ -299,7 +315,8 @@ class Renderer {
       return;
     }
     this.flush(st);
-    this.place(this.block(n), n.r, st);
+    // A floating dialog never shares a line with what it happens to sit beside.
+    this.place(this.block(n), n.ov ? undefined : n.r, st);
   }
 
   private contents(children: Node[] = []): string[] {
@@ -317,6 +334,17 @@ class Renderer {
   // ---- blocks -------------------------------------------------------------
 
   block(n: El): string[] {
+    const outer = this.layer;
+    if (n.ov && n.r) {
+      this.layer = this.layers.push({ r: n.r, bg: n.bg, bd: n.bd });
+      this.layerOf.set(n.ov, this.layer);
+    }
+    const lines = this.blockLines(n);
+    this.layer = outer;
+    return lines;
+  }
+
+  private blockLines(n: El): string[] {
     let lines: string[];
     if (n.h) lines = ['', '#'.repeat(n.h) + ' ' + this.inlineText(n.c)];
     else if (n.txt !== undefined) lines = ['```', ...n.txt.split('\n'), '```'];

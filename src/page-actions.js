@@ -35,7 +35,32 @@
         blocker = blocker || hit;
       }
     }
-    return { error: `ref ${ref} is covered by ${this.describe(blocker)}` };
+    const dialog = this.dialogAt(blocker);
+    return { error: `ref ${ref} is covered by ${this.describe(blocker)}`, dialog: dialog ? this.controls(dialog) : undefined };
+  },
+
+  // The modal a hit belongs to, if any. The hit is often its backdrop, which
+  // holds the dialog rather than being inside it.
+  dialogAt(el) {
+    if (!el) return null;
+    const DIALOG = 'dialog, [role=dialog], [role=alertdialog], [aria-modal=true]';
+    return el.closest(DIALOG) || el.querySelector(DIALOG);
+  },
+
+  // The refs of a dialog's buttons (or, without any, its other controls), so an
+  // error can say how to close it. Only elements a snapshot has numbered have refs.
+  controls(dialog) {
+    const m = window.__medley;
+    const buttons = [];
+    const others = [];
+    for (const el of dialog.querySelectorAll('*')) {
+      const id = m && m.ids.get(el);
+      if (!id || !el.checkVisibility()) continue;
+      const button = el.localName === 'button' || el.getAttribute('role') === 'button' ||
+        (el.localName === 'input' && /^(button|submit|reset)$/.test(el.type));
+      (button ? buttons : others).push(id);
+    }
+    return buttons.length ? buttons : others;
   },
 
   hitTest(doc, x, y) {
@@ -67,9 +92,7 @@
 
   describe(el) {
     if (!el) return 'nothing (it may be off-screen)';
-    // The hit is often a modal's backdrop, which holds the dialog rather than being inside it.
-    const DIALOG = 'dialog, [role=dialog], [role=alertdialog], [aria-modal=true]';
-    const dialog = el.closest(DIALOG) || el.querySelector(DIALOG);
+    const dialog = this.dialogAt(el);
     if (dialog) {
       const name = dialog.getAttribute('aria-label') || (dialog.innerText || '').trim().split('\n')[0];
       return `a dialog${name ? ` "${name.slice(0, 60)}"` : ''}; close it first`;

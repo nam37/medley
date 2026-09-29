@@ -102,6 +102,7 @@ interface Piece {
   end: number;
   x: number;
   bold?: boolean; // a table's header row or caption
+  layer?: number; // on the page canvas: the floating dialog it's in (see Visual.layers)
 }
 
 /** One screen row: pieces side by side, and the column separators between them. */
@@ -209,9 +210,11 @@ export class PageView extends Renderable {
   private layoutKey = '';
   private columnGroups = 0; // groups drawn as columns in the current layout
   private canvas = false; // the current layout is the page canvas
-  private decor: (Area & { bg?: RGBA; bd?: RGBA })[] = [];
-  private pictures: (Area & { image: number; cells?: RGBA[] })[] = [];
-  private rules: { row: number; col: number; text: string }[] = []; // tables' grid lines
+  // On the page canvas, what's in a floating dialog carries its `layer`, drawn over the page.
+  private decor: (Area & { bg?: RGBA; bd?: RGBA; layer?: number })[] = [];
+  private pictures: (Area & { image: number; cells?: RGBA[]; layer?: number })[] = [];
+  private rules: { row: number; col: number; text: string; layer?: number }[] = []; // tables' grid lines
+  private layers: (Area & { bg: RGBA; bd: RGBA })[] = []; // each floating dialog's card
   private topRow = 0;
   private anchorLine = 0; // the line at the top of the view, kept across re-layout
   private selected: number | null = null;
@@ -319,6 +322,7 @@ export class PageView extends Renderable {
     this.canvas = this.mode === 'advanced' && !!this.visual && width > 0;
     this.decor = [];
     this.pictures = [];
+    this.layers = [];
     this.rules = [];
     this.rows = this.canvas ? this.pageLayout(width) : this.flow(0, this.lines.length, 0, width, 0);
     this.rowOfLine = new Int32Array(this.lines.length).fill(-1);
@@ -326,6 +330,8 @@ export class PageView extends Renderable {
       for (const p of row.pieces) if (this.rowOfLine[p.line] < 0) this.rowOfLine[p.line] = r;
     });
     this.topRow = this.firstRowOf(this.anchorLine);
+    // At the top of the page, a dialog floating higher than its first text shows whole.
+    if (this.anchorLine === 0) this.topRow = Math.min(this.topRow, ...this.layers.map((l) => l.row));
     this.clamp();
   }
 
@@ -386,18 +392,22 @@ export class PageView extends Renderable {
    * were on the page, scaled to `width` cells. A skyline keeps things from
    * overlapping, and when text needs more rows than its box had on the page,
    * everything below that box moves down by the same amount, so blocks that
-   * lined up on the page still line up.
+   * lined up on the page still line up. A dialog floating over the page (a
+   * layer) is laid out the same way inside its own box, which is drawn over
+   * the page as a card, hiding what it covers as it does on the page.
    */
   private pageLayout(width: number): Row[] {
     const v = this.visual!;
     const sx = width / Math.max(1, v.width);
     const sy = sx / 2; // terminal cells are about twice as tall as they are wide
     const pageRow = (y: number) => Math.round(y * sy);
+    const layers = v.layers ?? []; // sessions from before layers don't send them
 
     type Item = { r: Rect; order: number; lines: [number, number]; table: boolean };
-    const items: Item[] = [];
+    const items: Item[][] = [[], ...layers.map(() => [])]; // the page's runs, then each layer's
     const boxOf = (i: number) => v.lines[i]?.[0];
-    let last: Rect = [0, 0, v.width, 0];
+    const last: Rect[] = [[0, 0, v.width, 0], ...layers.map((l): Rect => [l.r[0], l.r[1], l.r[2], 0])];
+    const lineLayer = new Int32Array(this.lines.length);
     const skip = (i: number) => !this.lines[i].trim() || (!this.fenced[i] && isDivider(this.lines[i]));
     for (let i = 0; i < this.lines.length; ) {
       if (skip(i)) {
@@ -412,71 +422,82 @@ export class PageView extends Renderable {
         if (!same) break;
         j++;
       }
+      const layer = Math.min(v.boxes[key]?.layer ?? 0, layers.length);
+      const prev = last[layer];
       const ids = new Set<number>();
       for (let k = i; k < j; k++) for (const id of v.lines[k] ?? []) ids.add(id);
-      let r = union([...ids].map((id) => v.boxes[id].r)) ?? [0, last[1] + last[3], v.width, 20];
+      let r = union([...ids].map((id) => v.boxes[id].r)) ?? [0, prev[1] + prev[3], v.width, 20];
       // A container's own text that follows its children belongs after them, not at its top.
-      const inside = r[0] <= last[0] && r[1] <= last[1] && r[0] + r[2] >= last[0] + last[2] && r[1] + r[3] >= last[1] + last[3];
-      if (inside && r[1] < last[1]) r = [r[0], last[1], r[2], Math.max(0, r[1] + r[3] - last[1])];
+      const inside = r[0] <= prev[0] && r[1] <= prev[1] && r[0] + r[2] >= prev[0] + prev[2] && r[1] + r[3] >= prev[1] + prev[3];
+      if (inside && r[1] < prev[1]) r = [r[0], prev[1], r[2], Math.max(0, r[1] + r[3] - prev[1])];
       // Off the page to the side (carousel slides, skip links) isn't drawn, as on the page itself.
       if (r[0] < v.width && r[0] + r[2] > 0) {
-        items.push({ r, order: items.length, lines: [i, j], table: !!v.boxes[key]?.table });
+        items[layer].push({ r, order: items[layer].length, lines: [i, j], table: !!v.boxes[key]?.table });
+        lineLayer.fill(layer, i, j);
       }
-      last = r;
+      last[layer] = r;
       i = j;
     }
-    items.sort((a, b) => a.r[1] - b.r[1] || a.order - b.order);
 
     const rows: Row[] = [];
-    const placed: { r: Rect; top: number; bottom: number }[] = []; // where each run of text went
+    const placed: { r: Rect; top: number; bottom: number; layer: number }[] = []; // where each run of text went
     const tables: (Area & { r: Rect })[] = []; // where each table's grid went
-    const skyline = new Int32Array(width);
-    const shifts: { bottom: number; shift: number }[] = [];
-    const shiftAt = (y: number) => shifts.reduce((s, d) => (d.bottom <= y + 1 && d.shift > s ? d.shift : s), 0);
-    for (const it of items) {
-      const longest = Math.max(...this.lines.slice(it.lines[0], it.lines[1]).map((l) => Bun.stringWidth(l)));
-      // A sliver of a box still gets a few words.
-      const cols = Math.min(width, Math.max(1, Math.round(it.r[2] * sx), Math.min(12, longest)));
-      const col = Math.min(Math.max(0, Math.round(it.r[0] * sx)), width - cols);
-      let top = Math.max(0, pageRow(it.r[1]) + shiftAt(it.r[1]));
-      for (let c = col; c < col + cols; c++) top = Math.max(top, skyline[c]);
-      let r = top;
-      let used = cols;
-      let grid = null;
-      if (it.table) {
-        // A grid may grow wider than its box, but only into free space: not past
-        // whatever sits beside it on the page (an infobox next to a side panel).
-        let limit = width;
-        for (const o of items) {
-          const beside = o.r[1] < it.r[1] + it.r[3] && o.r[1] + o.r[3] > it.r[1] && o.r[0] >= it.r[0] + it.r[2] - 1;
-          if (o !== it && beside) limit = Math.min(limit, Math.round(o.r[0] * sx) - 1);
+
+    // Lay runs out in columns [lo, hi), `delta` rows from where the page had
+    // them and no higher than `floor`. Returns the shift below each page y, and
+    // the row after the last text.
+    const place = (list: Item[], layer: number, lo: number, hi: number, delta: number, floor: number) => {
+      list.sort((a, b) => a.r[1] - b.r[1] || a.order - b.order);
+      const skyline = new Int32Array(width).fill(floor);
+      const shifts: { bottom: number; shift: number }[] = [];
+      const shiftAt = (y: number) => shifts.reduce((s, d) => (d.bottom <= y + 1 && d.shift > s ? d.shift : s), 0);
+      let end = floor;
+      for (const it of list) {
+        const longest = Math.max(...this.lines.slice(it.lines[0], it.lines[1]).map((l) => Bun.stringWidth(l)));
+        // A sliver of a box still gets a few words.
+        const cols = Math.min(hi - lo, Math.max(1, Math.round(it.r[2] * sx), Math.min(12, longest)));
+        const col = Math.min(Math.max(lo, Math.round(it.r[0] * sx)), hi - cols);
+        let top = Math.max(floor, pageRow(it.r[1]) + delta + shiftAt(it.r[1]));
+        for (let c = col; c < col + cols; c++) top = Math.max(top, skyline[c]);
+        let r = top;
+        let used = cols;
+        let grid = null;
+        if (it.table) {
+          // A grid may grow wider than its box, but only into free space: not past
+          // whatever sits beside it on the page (an infobox next to a side panel).
+          let limit = hi;
+          for (const o of list) {
+            const beside = o.r[1] < it.r[1] + it.r[3] && o.r[1] + o.r[3] > it.r[1] && o.r[0] >= it.r[0] + it.r[2] - 1;
+            if (o !== it && beside) limit = Math.min(limit, Math.round(o.r[0] * sx) - 1);
+          }
+          grid = this.placeTable(it.lines, col, cols, Math.max(cols, limit - col), top, rows);
         }
-        grid = this.placeTable(it.lines, col, cols, Math.max(cols, limit - col), top, rows);
-      }
-      if (grid) {
-        r = grid.bottom;
-        used = grid.width;
-        tables.push({ r: it.r, row: top, col, rows: r - top, cols: used });
-      } else {
-        for (let li = it.lines[0]; li < it.lines[1]; li++) {
-          if (this.lines[li].trim() && skip(li)) continue;
-          const from = this.fenced[li] ? 0 : (HEADING_MARK.exec(this.lines[li])?.[0].length ?? 0);
-          for (const w of wrap(this.lines[li].slice(from), cols)) {
-            const piece = { line: li, start: from + w.start, end: from + w.end, x: col + w.indent };
-            (rows[r] ??= { pieces: [], seps: [] }).pieces.push(piece);
-            r++;
+        if (grid) {
+          r = grid.bottom;
+          used = grid.width;
+          tables.push({ r: it.r, row: top, col, rows: r - top, cols: used });
+        } else {
+          for (let li = it.lines[0]; li < it.lines[1]; li++) {
+            if (this.lines[li].trim() && skip(li)) continue;
+            const from = this.fenced[li] ? 0 : (HEADING_MARK.exec(this.lines[li])?.[0].length ?? 0);
+            for (const w of wrap(this.lines[li].slice(from), cols)) {
+              const piece = { line: li, start: from + w.start, end: from + w.end, x: col + w.indent };
+              (rows[r] ??= { pieces: [], seps: [] }).pieces.push(piece);
+              r++;
+            }
           }
         }
+        for (let c = col; c < col + used; c++) skyline[c] = r;
+        placed.push({ r: it.r, top, bottom: r, layer });
+        end = Math.max(end, r);
+        const overflow = r - (pageRow(it.r[1] + it.r[3]) + delta);
+        if (overflow > shiftAt(it.r[1] + it.r[3])) shifts.push({ bottom: it.r[1] + it.r[3], shift: overflow });
       }
-      for (let c = col; c < col + used; c++) skyline[c] = r;
-      placed.push({ r: it.r, top, bottom: r });
-      const overflow = r - pageRow(it.r[1] + it.r[3]);
-      if (overflow > shiftAt(it.r[1] + it.r[3])) shifts.push({ bottom: it.r[1] + it.r[3], shift: overflow });
-    }
+      return { shiftAt, end };
+    };
 
     // Pictures, backgrounds and borders sit under the text, following the same
     // shifts; text laid over a picture on the page stays over it here.
-    const mapRow = (y: number) => Math.max(0, pageRow(y) + shiftAt(y));
     // Unlike text, these are clipped at the edges rather than moved inside: a
     // carousel's next slide peeks in at the right, as it does on the page.
     const inTable = (r: Rect) => {
@@ -484,59 +505,87 @@ export class PageView extends Renderable {
       const cy = r[1] + r[3] / 2;
       return tables.some((t) => cx >= t.r[0] && cx <= t.r[0] + t.r[2] && cy >= t.r[1] && cy <= t.r[1] + t.r[3]);
     };
-    v.images.forEach((im, image) => {
-      // A grid's rows don't follow the page's, so a picture in a table would land on the wrong row.
-      if (inTable(im.r)) return;
-      const fullCol = Math.round(im.r[0] * sx);
-      const fullCols = Math.max(1, Math.round(im.r[2] * sx));
-      const fullRows = Math.max(1, pageRow(im.r[3]));
-      if (fullCol >= width || fullCol + fullCols <= 0) return;
-      // A background: nearly page-wide, or with sizable pictures lying on it (not
-      // just a small floating icon that happens to overlap).
-      const area = im.r[2] * im.r[3];
-      const background =
-        im.r[2] >= 0.8 * v.width ||
-        v.images.some((o, i) => {
-          if (i === image || o.r[2] * o.r[3] >= area || o.r[2] * o.r[3] < 0.03 * area) return false;
-          const cx = o.r[0] + o.r[2] / 2;
-          const cy = o.r[1] + o.r[3] / 2;
-          return cx >= im.r[0] && cx <= im.r[0] + im.r[2] && cy >= im.r[1] && cy <= im.r[1] + im.r[3];
-        });
-      const scale = background ? 1 : PICTURE_SCALE;
-      const cols = Math.max(1, Math.round(fullCols * scale));
-      const rowsHigh = Math.max(1, Math.round(fullRows * scale));
-      const col = fullCol + Math.floor((fullCols - cols) / 2);
-      const row = mapRow(im.r[1]) + Math.floor((fullRows - rowsHigh) / 2);
-      this.pictures.push({ row, col, rows: rowsHigh, cols, image });
-    });
-    for (const d of v.decor) {
-      // A table's own background covers its grid, which draws its own lines.
-      const table = tables.find((t) => t.r.every((n, i) => n === d.r[i]));
-      if (table) {
-        if (d.bg) this.decor.push({ row: table.row, col: table.col, rows: table.rows, cols: table.cols, bg: color(d.bg) });
-        continue;
+    const underText = (layer: number, mapRow: (y: number) => number) => {
+      v.images.forEach((im, image) => {
+        // A grid's rows don't follow the page's, so a picture in a table would land on the wrong row.
+        if ((im.layer ?? 0) !== layer || inTable(im.r)) return;
+        const fullCol = Math.round(im.r[0] * sx);
+        const fullCols = Math.max(1, Math.round(im.r[2] * sx));
+        const fullRows = Math.max(1, pageRow(im.r[3]));
+        if (fullCol >= width || fullCol + fullCols <= 0) return;
+        // A background: nearly page-wide, or with sizable pictures lying on it (not
+        // just a small floating icon that happens to overlap).
+        const area = im.r[2] * im.r[3];
+        const background =
+          im.r[2] >= 0.8 * v.width ||
+          v.images.some((o, i) => {
+            if (i === image || o.r[2] * o.r[3] >= area || o.r[2] * o.r[3] < 0.03 * area) return false;
+            const cx = o.r[0] + o.r[2] / 2;
+            const cy = o.r[1] + o.r[3] / 2;
+            return cx >= im.r[0] && cx <= im.r[0] + im.r[2] && cy >= im.r[1] && cy <= im.r[1] + im.r[3];
+          });
+        const scale = background ? 1 : PICTURE_SCALE;
+        const cols = Math.max(1, Math.round(fullCols * scale));
+        const rowsHigh = Math.max(1, Math.round(fullRows * scale));
+        const col = fullCol + Math.floor((fullCols - cols) / 2);
+        const row = mapRow(im.r[1]) + Math.floor((fullRows - rowsHigh) / 2);
+        this.pictures.push({ row, col, rows: rowsHigh, cols, image, layer: layer || undefined });
+      });
+      for (const d of v.decor) {
+        if ((d.layer ?? 0) !== layer) continue;
+        // A table's own background covers its grid, which draws its own lines.
+        const table = tables.find((t) => t.r.every((n, i) => n === d.r[i]));
+        if (table) {
+          if (d.bg) this.decor.push({ row: table.row, col: table.col, rows: table.rows, cols: table.cols, bg: color(d.bg), layer: d.layer });
+          continue;
+        }
+        const left = Math.round(d.r[0] * sx);
+        const right = Math.round((d.r[0] + d.r[2]) * sx);
+        const col = Math.max(0, left);
+        const cols = Math.min(width, right) - col;
+        if (cols < 1) continue;
+        // Span the text drawn inside the box, or its own height when it holds none; the
+        // page-wide shift alone would stretch it by whatever overflowed beside it.
+        const within = placed.filter(
+          (p) =>
+            p.layer === layer &&
+            p.r[0] >= d.r[0] - 1 && p.r[1] >= d.r[1] - 1 && p.r[0] + p.r[2] <= d.r[0] + d.r[2] + 1 && p.r[1] + p.r[3] <= d.r[1] + d.r[3] + 1,
+        );
+        const row = Math.min(mapRow(d.r[1]), ...within.map((p) => p.top));
+        const end = Math.max(row + pageRow(d.r[3]), ...within.map((p) => p.bottom + 1));
+        const rowsHigh = Math.max(1, end - row);
+        const clipped = left < 0 || right > width;
+        const bd = d.bd && !clipped ? color(d.bd) : undefined; // a border cut off at the edge would mislead
+        this.decor.push({ row, col, rows: rowsHigh, cols, bg: d.bg ? color(d.bg) : undefined, bd, layer: d.layer });
       }
-      const left = Math.round(d.r[0] * sx);
-      const right = Math.round((d.r[0] + d.r[2]) * sx);
-      const col = Math.max(0, left);
-      const cols = Math.min(width, right) - col;
-      if (cols < 1) continue;
-      // Span the text drawn inside the box, or its own height when it holds none; the
-      // page-wide shift alone would stretch it by whatever overflowed beside it.
-      const within = placed.filter(
-        (p) => p.r[0] >= d.r[0] - 1 && p.r[1] >= d.r[1] - 1 && p.r[0] + p.r[2] <= d.r[0] + d.r[2] + 1 && p.r[1] + p.r[3] <= d.r[1] + d.r[3] + 1,
-      );
-      const row = Math.min(mapRow(d.r[1]), ...within.map((p) => p.top));
-      const end = Math.max(row + pageRow(d.r[3]), ...within.map((p) => p.bottom + 1));
-      const rowsHigh = Math.max(1, end - row);
-      const clipped = left < 0 || right > width;
-      const bd = d.bd && !clipped ? color(d.bd) : undefined; // a border cut off at the edge would mislead
-      this.decor.push({ row, col, rows: rowsHigh, cols, bg: d.bg ? color(d.bg) : undefined, bd });
-    }
+    };
+
+    const page = place(items[0], 0, 0, width, 0, 0);
+    const mapRow = (y: number) => Math.max(0, pageRow(y) + page.shiftAt(y));
+    underText(0, mapRow);
+
+    // Each layer where it floated, over the page as drawn: a border, a column
+    // of padding, and its own text and pictures inside, as tall as they need.
+    layers.forEach((l, k) => {
+      const layer = k + 1;
+      const cols = Math.min(width, Math.max(8, Math.round(l.r[2] * sx)));
+      const col = Math.min(Math.max(0, Math.round(l.r[0] * sx)), width - cols);
+      const row = mapRow(l.r[1]);
+      const pad = cols >= 12 ? 2 : 1;
+      const delta = row + 1 - pageRow(l.r[1]);
+      const rules = this.rules.length;
+      const inner = place(items[layer], layer, col + pad, col + cols - pad, delta, row + 1);
+      for (let i = rules; i < this.rules.length; i++) this.rules[i].layer = layer;
+      underText(layer, (y) => pageRow(y) + delta + inner.shiftAt(y));
+      const rowsHigh = Math.max(pageRow(l.r[3]), inner.end + 1 - row);
+      this.layers.push({ row, col, rows: rowsHigh, cols, bg: color(l.bg ?? v.canvas), bd: l.bd ? color(l.bd) : TABLE_RULE });
+    });
     this.decor.sort((a, b) => b.rows * b.cols - a.rows * a.cols);
 
-    const height = Math.max(rows.length, ...this.pictures.map((p) => p.row + p.rows), 0);
+    const height = Math.max(rows.length, ...this.pictures.map((p) => p.row + p.rows), ...this.layers.map((l) => l.row + l.rows), 0);
     for (let r = 0; r < height; r++) rows[r] ??= { pieces: [], seps: [] };
+    // A layer's text is drawn with its layer, over the page.
+    for (const row of rows) for (const p of row.pieces) if (lineLayer[p.line]) p.layer = lineLayer[p.line];
     return rows;
   }
 
@@ -845,16 +894,32 @@ export class PageView extends Renderable {
     const x0 = this.screenX + GUTTER;
     const top = this.topRow;
     const bottom = top + this.visibleRows;
-    if (this.canvas) this.drawCanvas(buffer, x0, top, bottom);
-
+    if (this.canvas) {
+      buffer.fillRect(this.screenX, this.screenY, this.width, this.height, color(this.visual!.canvas));
+      this.drawCanvas(buffer, x0, top, bottom, 0);
+    }
     const styles = new Map<number, ReturnType<PageView['styleLine']>>();
+    this.drawText(buffer, x0, top, styles, 0);
+    // Floating dialogs go over the page, each a card hiding what it covers.
+    this.layers.forEach((l, k) => {
+      this.drawCard(buffer, x0, top, bottom, l);
+      this.drawCanvas(buffer, x0, top, bottom, k + 1);
+      this.drawText(buffer, x0, top, styles, k + 1);
+    });
+  }
+
+  /** The rows' text in one layer (0 for the page itself). */
+  private drawText(buffer: OptimizedBuffer, x0: number, top: number, styles: Map<number, ReturnType<PageView['styleLine']>>, layer: number) {
     for (let r = 0; r < this.visibleRows; r++) {
       const row = this.rows[top + r];
       if (!row) break;
       const y = this.screenY + r;
-      if (row.pieces.some((p) => this.changed.has(p.line))) buffer.drawText('▎', this.screenX, y, THEME.changed);
-      for (const sep of row.seps) buffer.drawText('│', x0 + sep, y, THEME.dim);
+      if (!layer) {
+        if (row.pieces.some((p) => this.changed.has(p.line))) buffer.drawText('▎', this.screenX, y, THEME.changed);
+        for (const sep of row.seps) buffer.drawText('│', x0 + sep, y, THEME.dim);
+      }
       for (const p of row.pieces) {
+        if ((p.layer ?? 0) !== layer) continue;
         let s = styles.get(p.line);
         if (!s) styles.set(p.line, (s = this.styleLine(p.line)));
         const line = this.lines[p.line];
@@ -876,7 +941,7 @@ export class PageView extends Renderable {
             }
             const page = this.pageColors(p.line, s.fg[i], Math.max(0, s.refAt[i]));
             fg = page.fg;
-            bg = page.bg ?? (this.overPicture(top + r, x - x0, cells) ? backdropFor(fg) : undefined);
+            bg = page.bg ?? (this.overPicture(top + r, x - x0, cells, layer) ? backdropFor(fg) : undefined);
             if (page.bold) attrs |= TextAttributes.BOLD;
           }
           buffer.drawText(text, x, y, fg, bg, attrs);
@@ -887,44 +952,61 @@ export class PageView extends Renderable {
     }
   }
 
-  /** Whether cells [col, col + cols) of a canvas row lie over a drawn picture. */
-  private overPicture(row: number, col: number, cols: number): boolean {
+  /** Whether cells [col, col + cols) of a canvas row lie over a picture drawn in that layer. */
+  private overPicture(row: number, col: number, cols: number, layer = 0): boolean {
     if (!this.pixels) return false;
-    return this.pictures.some((p) => row >= p.row && row < p.row + p.rows && col < p.col + p.cols && col + cols > p.col);
+    return this.pictures.some(
+      (p) => (p.layer ?? 0) === layer && row >= p.row && row < p.row + p.rows && col < p.col + p.cols && col + cols > p.col,
+    );
   }
 
-  /** The page's background, its boxes' backgrounds and borders, and its pictures. */
-  private drawCanvas(buffer: OptimizedBuffer, x0: number, top: number, bottom: number) {
-    const v = this.visual!;
-    buffer.fillRect(this.screenX, this.screenY, this.width, this.height, color(v.canvas));
-    const visible = (a: Area) => a.row < bottom && a.row + a.rows > top;
+  /** A box's background and border, in the rows between `top` and `bottom` that it spans. */
+  private drawBox(buffer: OptimizedBuffer, x0: number, top: number, bottom: number, d: Area & { bg?: RGBA; bd?: RGBA }) {
+    if (d.row >= bottom || d.row + d.rows <= top) return;
     const yOf = (row: number) => this.screenY + row - top;
-
-    for (const d of this.decor) {
-      if (!visible(d)) continue;
-      const from = Math.max(d.row, top);
-      const to = Math.min(d.row + d.rows, bottom);
-      if (d.bg) buffer.fillRect(x0 + d.col, yOf(from), d.cols, to - from, d.bg);
-      if (!d.bd || d.cols < 2 || d.rows < 2) continue;
-      for (let row = from; row < to; row++) {
-        const y = yOf(row);
-        if (row === d.row || row === d.row + d.rows - 1) {
-          const [l, r] = row === d.row ? ['┌', '┐'] : ['└', '┘'];
-          buffer.drawText(l + '─'.repeat(d.cols - 2) + r, x0 + d.col, y, d.bd);
-        } else {
-          buffer.drawText('│', x0 + d.col, y, d.bd);
-          buffer.drawText('│', x0 + d.col + d.cols - 1, y, d.bd);
-        }
+    const from = Math.max(d.row, top);
+    const to = Math.min(d.row + d.rows, bottom);
+    if (d.bg) buffer.fillRect(x0 + d.col, yOf(from), d.cols, to - from, d.bg);
+    if (!d.bd || d.cols < 2 || d.rows < 2) return;
+    for (let row = from; row < to; row++) {
+      const y = yOf(row);
+      if (row === d.row || row === d.row + d.rows - 1) {
+        const [l, r] = row === d.row ? ['┌', '┐'] : ['└', '┘'];
+        buffer.drawText(l + '─'.repeat(d.cols - 2) + r, x0 + d.col, y, d.bd);
+      } else {
+        buffer.drawText('│', x0 + d.col, y, d.bd);
+        buffer.drawText('│', x0 + d.col + d.cols - 1, y, d.bd);
       }
     }
+  }
+
+  /** A floating dialog's card: its background over everything under it, and a border. */
+  private drawCard(buffer: OptimizedBuffer, x0: number, top: number, bottom: number, card: Area & { bg: RGBA; bd: RGBA }) {
+    // Clear the cells first, so no page text or picture shows through where the card has no color of its own.
+    if (card.row < bottom && card.row + card.rows > top) {
+      const from = Math.max(card.row, top);
+      const to = Math.min(card.row + card.rows, bottom);
+      for (let row = from; row < to; row++) buffer.drawText(' '.repeat(card.cols), x0 + card.col, this.screenY + row - top, card.bd, card.bg);
+    }
+    this.drawBox(buffer, x0, top, bottom, card);
+  }
+
+  /** One layer's (0: the page's) boxes' backgrounds and borders, tables' lines, and pictures. */
+  private drawCanvas(buffer: OptimizedBuffer, x0: number, top: number, bottom: number, layer: number) {
+    const v = this.visual!;
+    const visible = (a: Area) => a.row < bottom && a.row + a.rows > top;
+    const yOf = (row: number) => this.screenY + row - top;
+    const inLayer = (a: { layer?: number }) => (a.layer ?? 0) === layer;
+
+    for (const d of this.decor) if (inLayer(d)) this.drawBox(buffer, x0, top, bottom, d);
 
     for (const rule of this.rules) {
-      if (rule.row >= top && rule.row < bottom) buffer.drawText(rule.text, x0 + rule.col, yOf(rule.row), TABLE_RULE);
+      if (inLayer(rule) && rule.row >= top && rule.row < bottom) buffer.drawText(rule.text, x0 + rule.col, yOf(rule.row), TABLE_RULE);
     }
 
     const width = this.width - GUTTER;
     for (const p of this.pictures) {
-      if (!visible(p)) continue;
+      if (!inLayer(p) || !visible(p)) continue;
       const cells = this.pixels ? (p.cells ??= this.sample(p)) : undefined;
       const from = Math.max(0, -p.col);
       const to = Math.min(p.cols, width - p.col); // clipped at the view's edges

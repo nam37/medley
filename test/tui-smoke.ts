@@ -187,6 +187,22 @@ try {
   await keys('y');
   show('y accepts it', await until('todos cleared', (f) => f.includes('accepted the confirm')));
 
+  // A modal over the page: pressing a ref it covers goes to the modal's button instead.
+  await keys('9');
+  mockInput.pressEnter();
+  await until('the newsletter', (f) => f.includes('clicked [9 button "Show newsletter"]'));
+  await keys('1', '0');
+  mockInput.pressEnter();
+  show('10, Enter under a modal: its button is selected', await until('the jump', (f) => f.includes('Enter presses [19 button "No thanks"]') && f.includes('Subscribe to our newsletter')));
+  // Advanced grid draws the modal as a card over the page, where it floats.
+  await keys('v', 'v');
+  show('advanced grid: the modal is a card', await until('the card', (f) => f.includes('advanced grid') && /┌─+┐/.test(f) && f.includes('Subscribe')));
+  await keys('v');
+  await until('no grid', (f) => f.includes('no grid'));
+  mockInput.pressEnter();
+  await until('the modal to close', (f) => f.includes('clicked [19 button "No thanks"] · +0 -4 lines'));
+  console.log('\nEnter closed the modal');
+
   mockInput.pressKey(':');
   await mockInput.typeText('hover 11');
   mockInput.pressEnter();
@@ -247,12 +263,12 @@ try {
   await keys('n');
   await until('the question to go', (f) => !f.includes('Quit medley?'));
   await keys('q', 'y');
-  show('y asks about the session', await until('the session question', (f) => f.includes('Keep the browser session')));
-  await keys('n');
+  show('y asks about the session', await until('the session question', (f) => f.includes('Close the background browser session')));
+  await keys('y');
   await app.closed;
   // The session answers "stop" first and removes its file a moment later.
   for (let i = 0; i < 40 && readSessionInfo(SESSION); i++) await Bun.sleep(50);
-  console.log(`\nn stayed; q, y, n quit and stopped the session: ${readSessionInfo(SESSION) ? 'still running (bad)' : 'stopped'}`);
+  console.log(`\nn stayed; q, y, y quit and stopped the session: ${readSessionInfo(SESSION) ? 'still running (bad)' : 'stopped'}`);
 } finally {
   setup.renderer.destroy();
   await send(SESSION, { cmd: 'stop', client: 'test' }).catch(() => {});

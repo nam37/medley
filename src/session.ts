@@ -105,6 +105,18 @@ class RefMap {
   resolve(global: number): { key: string; local: number } | undefined {
     return this.fromGlobal.get(global);
   }
+
+  /** A frame's ref as the page knows it, without numbering it if it's new. */
+  lookup(key: string, local: number): number | undefined {
+    return this.toGlobal.get(`${key}${KEY_SEP}${local}`);
+  }
+}
+
+/** A ref that a modal covers; `refs` are what can be pressed in the modal (page-wide numbers). */
+class Covered extends Error {
+  constructor(message: string, readonly refs: number[]) {
+    super(message);
+  }
 }
 
 /**
@@ -835,7 +847,8 @@ export class Session {
     try {
       await Promise.race([work, dialogOpened]);
     } catch (e) {
-      if (!page.closed) throw e; // otherwise the action closed its own tab: report from the one we're in now
+      // Otherwise the action closed its own tab: report from the one we're in now.
+      if (!page.closed) throw e instanceof Covered ? this.coveredError(client, e) : e;
     } finally {
       this.dialogWaiters.delete(wake);
     }
@@ -969,8 +982,15 @@ export class Session {
   private async locate(ref: number, scroll = true): Promise<{ x: number; y: number }> {
     const { frame } = this.target(ref);
     if (scroll) await this.revealFrame(frame);
-    let at = await this.callRef<{ x: number; y: number; error?: string }>('locate', ref, scroll);
-    if (at.error) throw new Error(at.error);
+    type Located = { x: number; y: number; error?: string; dialog?: number[] };
+    const failed = (at: Located) => {
+      if (!at.dialog) return new Error(at.error);
+      const key = this.refs?.map.resolve(ref)?.key ?? TOP;
+      const refs = at.dialog.map((local) => this.refs?.map.lookup(key, local) ?? local);
+      return new Covered(at.error!, refs);
+    };
+    let at = await this.callRef<Located>('locate', ref, scroll);
+    if (at.error) throw failed(at);
     if (frame && scroll) {
       // The browser places a frame's content where it was when it last drew;
       // after scrolling, let it draw before measuring (or a click lands where
@@ -978,8 +998,8 @@ export class Session {
       const drawn = 'new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))';
       await Promise.all([null, ...this.page.frameChain(frame)].map((f) => this.page.evaluateIn(f, drawn).catch(() => {})));
       await sleep(50);
-      at = await this.callRef<{ x: number; y: number; error?: string }>('locate', ref);
-      if (at.error) throw new Error(at.error);
+      at = await this.callRef<Located>('locate', ref);
+      if (at.error) throw failed(at);
     }
     let { x, y } = at;
     if (frame) {
@@ -1009,6 +1029,14 @@ export class Session {
 
   private call<T>(method: string, ...args: unknown[]): Promise<T> {
     return this.page.evaluate<T>(`(${ACTIONS}).${method}(${args.map((a) => JSON.stringify(a)).join(', ')})`);
+  }
+
+  /** Say how to close a modal in the way, naming its buttons the way this client's last snapshot showed them. */
+  private coveredError(client: string, e: Covered): Error {
+    const labels = this.baselines.get(client)?.labels;
+    const known = e.refs.map((ref) => labels?.get(ref)).filter((l): l is string => !!l);
+    if (!known.length) return new Error(`${e.message} (take a new snapshot to see it)`);
+    return new Error(`${e.message}: ${known.slice(0, 3).join(', ')}${known.length > 3 ? ', …' : ''}`);
   }
 
   private label(client: string, ref: number): string {

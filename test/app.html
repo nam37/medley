@@ -120,6 +120,7 @@
     });
 
     $('newsletter').addEventListener('click', () => { $('overlay').hidden = false; });
+    if (location.hash === '#newsletter') $('overlay').hidden = false; // opens with it showing
     $('close-overlay').addEventListener('click', () => { $('overlay').hidden = true; });
     $('covered').addEventListener('click', () => { $('covered').textContent = 'Bought!'; });
 

@@ -448,6 +448,7 @@
     // A dialog floating over the page (a modal, a consent notice) gets drawn
     // over it in the terminal UI's advanced grid, not in among what it covers.
     if (!inline && el.matches(DIALOG) && floats(el)) n.ov = `${M.doc}:${overlays.push(el)}`;
+    if (el === mainEl) n.main = 1;
     if (/^(ul|ol|menu)$/.test(tag) || role === 'list') {
       n.list = tag === 'ol' ? 'ol' : 'ul';
       if (tag === 'ol' && el.start !== 1) n.start = el.start;
@@ -472,6 +473,68 @@
   // The page's own background: the body's, the root's, or the browser default.
   const canvas = hex(getComputedStyle(document.body || document.documentElement).backgroundColor) ||
     hex(getComputedStyle(document.documentElement).backgroundColor) || '#ffffff';
+
+  // The page's main text, for reader views: the element holding the most
+  // paragraph text, scored the way Readability does (each paragraph counts for
+  // its parent, and half for its grandparent, more for commas and length),
+  // less for link-heavy blocks and ones named like sidebars or comments, more
+  // for ones named like articles. The <article> around it, if that isn't much
+  // bigger, so the headline and byline come along. None on a page without
+  // enough running text (a home page, a search).
+  function findMain() {
+    const scores = new Map();
+    const paragraphs = [];
+    const add = (el, s) => {
+      if (el && el !== document.body && el !== document.documentElement) scores.set(el, (scores.get(el) || 0) + s);
+    };
+    // Not what's in dialogs (a consent notice), navigation, sidebars or footers.
+    const aside = `${DIALOG}, nav, aside, footer, [role="navigation"], [role="complementary"], [role="contentinfo"]`;
+    for (const p of document.querySelectorAll('p, pre, blockquote')) {
+      const text = p.textContent.trim();
+      if (text.length < 25 || !p.checkVisibility() || p.closest(aside)) continue;
+      const s = 1 + (text.match(/,/g) || []).length + Math.min(3, Math.floor(text.length / 100));
+      paragraphs.push([p, s]);
+      add(p.parentElement, s);
+      add(p.parentElement && p.parentElement.parentElement, s / 2);
+    }
+    const linkShare = (el) => {
+      let linked = 0;
+      for (const a of el.querySelectorAll('a')) linked += a.textContent.length;
+      return Math.min(1, linked / (el.textContent.length || 1));
+    };
+    let best = null;
+    let bestScore = 0;
+    for (const [el, raw] of scores) {
+      const hint = `${typeof el.className === 'string' ? el.className : ''} ${el.id}`;
+      let s = raw;
+      if (/article|body|content|entry|main|post|story|text|prose/i.test(hint)) s *= 1.25;
+      if (/comment|footer|sidebar|nav|menu|share|related|promo|advert|widget|cookie/i.test(hint)) s *= 0.3;
+      s *= 1 - linkShare(el);
+      if (s > bestScore) {
+        best = el;
+        bestScore = s;
+      }
+    }
+    if (!best || bestScore < 10) return null;
+    // An article split into blocks (a few paragraphs each, wrapped their own
+    // way, with pictures and videos between): the nearest ancestor that holds
+    // markedly more of the page's running text, as long as it isn't mostly links.
+    const held = (el) => paragraphs.reduce((s, [p, v]) => s + (el.contains(p) ? v : 0), 0);
+    let holds = held(best);
+    for (let el = best.parentElement; el && el !== document.body; el = el.parentElement) {
+      const h = held(el);
+      if (h >= holds * 1.3 && linkShare(el) < 0.35) {
+        best = el;
+        holds = h;
+      }
+    }
+    // Enough running text to be an article, not a page of teasers.
+    const running = paragraphs.reduce((n, [p]) => n + (best.contains(p) ? p.textContent.trim().length : 0), 0);
+    if (holds < 15 || running < 500) return null;
+    const article = best.closest('article, [role="article"], main, [role="main"]');
+    return article && article.textContent.length < best.textContent.length * 2.5 ? article : best;
+  }
+  const mainEl = window === window.top ? findMain() : null; // a frame's own text is never the page's main text
 
   const root = document.body ? walk(document.body, { vis: true, pre: false, cursor: '', inRef: false, noText: false }) : null;
 

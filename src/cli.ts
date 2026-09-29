@@ -19,6 +19,8 @@ session commands:
   snapshot [--diff]               print the current page (--diff: only what changed since you last looked)
   snapshot --outline              the page's regions and headings, with how much each holds
   snapshot --section <name>       one region or heading's part of the page
+  snapshot --reader               reader view: just the page's main text (an article without menus,
+                                  sidebars and footers); goto <url> --reader opens a page that way
   click <ref>
   type <ref> <text> [--submit]    replace a field's text (--submit: then press Enter)
   select <ref> <option>           choose an option of a <select> by its text or value
@@ -94,6 +96,7 @@ const opts = {
   full: false,
   newTab: false,
   dom: false,
+  reader: false,
   json: false,
   color:!!process.stdout.isTTY && !process.env.NO_COLOR,
   width: undefined as number | undefined,
@@ -119,6 +122,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--full') opts.full = true;
   else if (a === '--new-tab') opts.newTab = true;
   else if (a === '--dom') opts.dom = true;
+  else if (a === '--reader') opts.reader = true;
   else if (a === '--json') opts.json = true;
   else if (a === '--color') opts.color = true;
   else if (a === '--no-color') opts.color = false;

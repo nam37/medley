@@ -21,10 +21,11 @@ export interface CommandFlags {
   full?: boolean; // screenshot --full
   newTab?: boolean; // click --new-tab
   dom?: boolean; // source --dom
+  reader?: boolean; // goto, search, snapshot --reader
   json?: boolean; // info --json (the CLI's own option)
 }
 
-const FLAGS = new Set(['--links', '--diff', '--submit', '--hard', '--outline', '--full', '--new-tab', '--dom']);
+const FLAGS = new Set(['--links', '--diff', '--submit', '--hard', '--outline', '--full', '--new-tab', '--dom', '--reader']);
 
 export class UsageError extends Error {}
 
@@ -77,14 +78,17 @@ export function parseCommand([command, ...rest]: string[], flags: CommandFlags =
   switch (command) {
     case 'goto':
       need(1, 'goto <url>');
-      return { cmd: 'goto', args: { url: toUrl(rest[0]), links: flags.links, outline: flags.outline }, start: true };
+      return { cmd: 'goto', args: { url: toUrl(rest[0]), links: flags.links, outline: flags.outline, reader: flags.reader }, start: true };
     case 'search':
       need(1, 'search <words>');
       return { cmd: 'goto', args: { url: searchUrl(rest.join(' ')), links: flags.links, outline: flags.outline }, start: true };
     case 'history':
       return { cmd: 'history', args: { n: rest[0] } };
     case 'snapshot':
-      return { cmd: 'snapshot', args: { diff: flags.diff, links: flags.links, outline: flags.outline, section: flags.section } };
+      return {
+        cmd: 'snapshot',
+        args: { diff: flags.diff, links: flags.links, outline: flags.outline, section: flags.section, reader: flags.reader },
+      };
     case 'click':
       need(1, 'click <ref> [--new-tab]');
       return { cmd: 'click', args: { ref: rest[0], newTab: flags.newTab } };

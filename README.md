@@ -105,6 +105,7 @@ sweeps across the `medley` badge and the status line says what's happening.
 | : | run any session command, e.g. `press Escape`, `wait 2`, `select 6 High` |
 | v | cycle the grid: no grid → partial grid (the page's main columns, like a sidebar beside the content) → advanced grid (the page as laid out, with its colors and pictures) |
 | i | the page's pictures one at a time, as big as the view fits them, starting from the first in view: ← → step, Esc closes |
+| m | reader mode: articles show only their main text, without the site's menus, sidebars and footers; it stays on from page to page until m again |
 | =, or a click on the title or address | page info, as a browser's padlock menu shows it: the connection and certificate, cookies and site data (c, then y, clears this site's), what the page says about itself, and what loading it took |
 | \ | the page's source, as the server sent it (with find); \ again brings the page back |
 | r, R | reload the page, like a browser's refresh (R bypasses the cache) |
@@ -152,6 +153,7 @@ medley search <words>               search the web and open the results
 medley snapshot [--diff] [--links]  print the current page, or only what changed since you last looked
 medley snapshot --outline           the page's regions and headings, with how many lines and refs each holds
 medley snapshot --section <name>     one region or heading and what's under it
+medley snapshot --reader             reader view: only the page's main text (goto <url> --reader too)
 medley click <ref>
 medley type <ref> <text> [--submit] replace a field's text, optionally pressing Enter
 medley fill <ref>=<value>... [--submit]  fill fields at once: text, a select's option, a checkbox on/off, a slider's number
@@ -190,6 +192,14 @@ returns the new page's outline instead of all of it, and `snapshot --section
 History` returns one part, with refs that work as usual. On a Wikipedia article
 the outline is 1.5 KB where the page is 22 KB. MCP takes `outline` and
 `section` the same way.
+
+An article can be read without the site around it: `goto <url> --reader` or
+`snapshot --reader` (MCP `reader`, the terminal UI's `m`) returns only the
+page's main text, with its refs: the headline, byline and body, without the
+menus, sidebars, footers and teasers. Medley finds it much as Firefox's Reader
+View does, by where the page's running text is, and says so when a page (a
+home page, a search) has no main text to single out. A BBC News article is 34
+of its 93 lines.
 
 Options: `--session <name>` for parallel sessions, `--headed` to watch the
 browser window, `--no-color`, `--width <px>`, `--browser <path>`, and two that

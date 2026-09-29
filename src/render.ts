@@ -36,6 +36,7 @@ export interface El {
   kind?: string;
   frame?: string; // a cross-origin iframe's frame id, until the session reads its content in (session.ts)
   ov?: string; // a dialog floating over the page (see Visual.layers)
+  main?: 1; // the page's main text, for reader views (see extract.js findMain)
   fg?: string; // text color, background, border (a card), bold: how it looks
   bg?: string;
   bd?: string;
@@ -89,7 +90,7 @@ export interface Visual {
   height: number; // the page's, for telling when it grew
   canvas: string; // page background color
   text: string; // page text color
-  boxes: { r: Rect; fg?: string; bold?: 1; table?: 1; layer?: number }[]; // a table's lines are its rows, `| a | b |`
+  boxes: { r: Rect; fg?: string; bold?: 1; table?: 1; layer?: number; main?: 1 }[]; // a table's lines are its rows, `| a | b |`; main: in the page's main text
   lines: number[][]; // for each body line, the boxes its text came from
   decor: { r: Rect; bg?: string; bd?: string; layer?: number }[]; // backgrounds and card borders
   images: { r: Rect; alt: string; layer?: number; bg?: 1 | 2 }[]; // bg: a CSS background, 1 a picture, 2 a gradient
@@ -168,6 +169,27 @@ export function renderParts(page: PageModel): Rendered {
   return { header: [page.title || '(untitled)', meta], body, links, hrefs, labels: r.labels, layout, visual };
 }
 
+/**
+ * The page's main text, as a reader view shows it: the lines that came from
+ * its main element (see extract.js findMain), blank lines between them kept
+ * once. Null when the page has none to single out.
+ */
+export function mainText(body: string[], visual: Visual): string[] | null {
+  const main = body.map((_, i) => (visual.lines[i] ?? []).some((id) => visual.boxes[id]?.main));
+  const first = main.indexOf(true);
+  if (first < 0) return null;
+  const last = main.lastIndexOf(true);
+  const out: string[] = [];
+  for (let i = first; i <= last; i++) {
+    if (main[i]) out.push(body[i]);
+    else if (!body[i].trim() && out[out.length - 1] !== '') out.push('');
+  }
+  // The headline often sits just outside the article's text: bring it along.
+  const headline = body.find((l) => l.startsWith('# '));
+  if (headline && !out.some((l) => l.startsWith('# '))) out.unshift(headline, '');
+  return out;
+}
+
 export function render(page: PageModel, { links = false } = {}): string {
   const p = renderParts(page);
   const out = [...p.header, '', ...p.body];
@@ -185,6 +207,7 @@ class Renderer {
   refStyles: Visual['refs'] = {};
   private groups = 0;
   private layer = 0; // the layer being rendered, 0 for the page
+  private inMain = false; // rendering the page's main text (see El.main)
 
   // ---- tokens -------------------------------------------------------------
 
@@ -224,7 +247,8 @@ class Renderer {
   private tag(lines: string[], n: El): string[] {
     if (!n.r) return lines; // its parent's box will do
     const layer = this.layer || undefined;
-    const id = this.boxes.push({ r: n.r, fg: n.fg, bold: n.fw, table: n.rows ? 1 : undefined, layer }) - 1;
+    const main = this.inMain ? (1 as const) : undefined;
+    const id = this.boxes.push({ r: n.r, fg: n.fg, bold: n.fw, table: n.rows ? 1 : undefined, layer, main }) - 1;
     // A layer's own background and border are the layer's (drawn with it as a card).
     if ((n.bg || n.bd) && !n.ov) this.decor.push({ r: n.r, bg: n.bg, bd: n.bd, layer });
     return lines.map((l) => (l.trim() && !isMarker(l) && !l.includes('\u0001') ? `\u0001${id}\u0002${l}` : l));
@@ -337,12 +361,18 @@ class Renderer {
 
   block(n: El): string[] {
     const outer = this.layer;
+    const outside = !this.inMain;
     if (n.ov && n.r) {
       this.layer = this.layers.push({ r: n.r, bg: n.bg, bd: n.bd });
       this.layerOf.set(n.ov, this.layer);
     }
+    if (n.main) this.inMain = true;
+    // Navigation, sidebars, footers and search boxes are never the main text, even inside it.
+    const aside = this.inMain && !!n.lm && /^(navigation|complementary|contentinfo|search)$/.test(n.lm);
+    if (aside) this.inMain = false;
     const lines = this.blockLines(n);
     this.layer = outer;
+    if (outside || aside) this.inMain = !outside;
     return lines;
   }
 

@@ -22,6 +22,7 @@ import { addBookmark, readBookmarks, removeBookmark } from '../bookmarks.ts';
 import { looksLikeAddress, parseCommand, searchUrl, splitFlags, splitWords, toUrl } from '../commands.ts';
 import { changedLines } from '../diff.ts';
 import { infoText, type PageInfo } from '../info.ts';
+import { mainText } from '../render.ts';
 import type { Screenshot, View } from '../session.ts';
 import { Bar, fit as fitText, type Segment } from './bar.ts';
 import { GRID_LABELS, GRID_MODES, PageView, type PageRef } from './page-view.ts';
@@ -94,6 +95,7 @@ const HELP = [
   't                  open the selected link in a new tab',
   'T, or click tab 2/3 the open tabs: a number, then Enter switches (d closes)',
   'v                  grid: none → partial (main columns) → advanced (nested too)',
+  'm                  reader mode: articles show just their main text (m again: all of it)',
   '=, or click the address  page info: connection, cookies and site data, about the page',
   '\\                  the page’s source, as the server sent it (\\ again: the page)',
   'i                  the page’s pictures one at a time, full size: ← → step, Esc closes',
@@ -122,6 +124,8 @@ export class App {
   private infoSite = ''; // the site whose data c would clear
   private infoClearing = false; // asking whether to clear it
   private sourceShown = false; // the page's source is showing instead of the page (\)
+  private readerOn = false; // reader mode (m): articles show just their main text
+  private readerFound = false; // and this page has main text to show
   private pages: BoxRenderable; // the bookmarks-and-history list (B)
   private pagesText: TextRenderable;
   private refsBox: BoxRenderable; // the refs pull-down (l, or a click on "N refs")
@@ -407,7 +411,7 @@ export class App {
       const changed = fresh ? new Set<number>() : changedLines(this.current!.body, page.body);
       this.current = page;
       this.sourceShown = false; // the page replaces its source
-      this.page.setPage(page.body, new Map(page.labels), changed, fresh, page.layout, page.visual ?? null);
+      this.showPage(changed, fresh);
       if (fresh) this.viewer.close(); // its pictures were the old page's
       if (this.refsBox.visible) this.refreshRefs(); // the page changed under the open list
       void this.loadPictures();
@@ -681,6 +685,8 @@ export class App {
         return void this.run('wait', { seconds: 2 });
       case 'i':
         return this.openViewer();
+      case 'm':
+        return this.toggleReader();
       case 'v':
         return this.cycleGrid();
       case 'a':
@@ -1042,6 +1048,35 @@ export class App {
     }
   }
 
+  // ---- reader mode, page info and source ------------------------------------------
+
+  /**
+   * Put the current page in the view: in reader mode, just its main text
+   * (without the grid, which is the page's layout); otherwise all of it.
+   * False when reader mode found no main text and shows all of it.
+   */
+  private showPage(changed: Set<number>, fresh: boolean): boolean {
+    const page = this.current!;
+    const main = this.readerOn && page.visual ? mainText(page.body, page.visual) : null;
+    if (main) this.page.setPage(main, new Map(page.labels), new Set(), fresh, [], null);
+    else this.page.setPage(page.body, new Map(page.labels), changed, fresh, page.layout, page.visual ?? null);
+    this.readerFound = !!main;
+    return !!main;
+  }
+
+  /** m: reader mode, which shows articles' main text only, on or off; it stays on from page to page. */
+  private toggleReader() {
+    this.readerOn = !this.readerOn;
+    if (!this.current) return this.say(`reader mode ${this.readerOn ? 'on' : 'off'}`, 'info');
+    this.sourceShown = false;
+    const found = this.showPage(new Set(), true);
+    this.picturesFor = ''; // the view was replaced, pictures and all
+    void this.loadPictures();
+    this.drawTop();
+    if (!this.readerOn) return this.say('reader mode off: all of the page', 'info');
+    this.say(found ? "reader mode: the page's main text · m for all of the page" : "reader mode: this page isn't an article, so all of it shows · m turns it off", 'info');
+  }
+
   // ---- page info and source --------------------------------------------------------
 
   /** =: the page info, in a box over the page: section headings in bold, the rest as it reads. */
@@ -1107,7 +1142,7 @@ export class App {
     const page = this.current;
     if (this.sourceShown) {
       this.sourceShown = false;
-      if (page) this.page.setPage(page.body, new Map(page.labels), new Set(), true, page.layout, page.visual ?? null);
+      if (page) this.showPage(new Set(), true);
       this.picturesFor = ''; // the source replaced its pictures
       void this.loadPictures();
       this.drawTop();
@@ -1277,7 +1312,9 @@ export class App {
     const grid = this.page.gridMode === 'none' ? '' : ` · ${GRID_LABELS[this.page.gridMode]}`;
     const tab = this.tabs.count > 1 ? `tab ${this.tabs.current}/${this.tabs.count} · ` : '';
     const what = this.sourceShown ? 'source' : `${this.page.refCount} refs`;
-    const right: Segment[] = p ? [{ text: `${tab}${what} · ${this.page.position}${this.sourceShown ? '' : grid} `, fg: THEME.barDim }] : [];
+    // Reader mode shows the main text without the page's layout, so no grid then.
+    const mode = this.sourceShown ? '' : this.readerOn ? (this.readerFound ? ' · reader' : ` · reader (all of it)${grid}`) : grid;
+    const right: Segment[] = p ? [{ text: `${tab}${what} · ${this.page.position}${mode} `, fg: THEME.barDim }] : [];
     this.top.set(left, right);
   }
 

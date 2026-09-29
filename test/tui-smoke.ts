@@ -273,6 +273,20 @@ try {
   await until('the page again', (f) => f.includes('# Todos') && !f.includes('<title>'));
   console.log('\n\\ again brought the page back');
 
+  // m, reader mode: an article's main text, without the site's menus, sidebar and footer.
+  mockInput.pressKey(':');
+  await mockInput.typeText(`goto ${pathToFileURL(join(import.meta.dir, 'article.html')).href}`);
+  mockInput.pressEnter();
+  await until('the article', (f) => f.includes('Why terminals are still here') && f.includes('Ten tips for your shell'));
+  await keys('m');
+  show('m: reader mode shows the main text', await until('reader mode', (f) =>
+    f.includes('Fifty years after') && !f.includes('Ten tips for your shell') && !f.includes('Sign in') && f.includes('reader')));
+  await keys('m');
+  await until('all of the page', (f) => f.includes('Ten tips for your shell'));
+  await keys('b');
+  await until('the app again', (f) => f.includes('# Todos'));
+  console.log('\nm again showed all of the page; b went back');
+
   await keys('?');
   show('? shows the keys', await until('the help', (f) => f.includes('any key to close')));
   await keys('x');

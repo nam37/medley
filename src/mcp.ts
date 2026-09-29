@@ -17,7 +17,8 @@ as \`ref\` to act on it. After an action you get only what changed, as diff hunk
 ("- " old line, "+ " new line) under the region they belong to; a new page comes
 back in full. Refs stay valid until the page navigates. A long page can be read in
 parts: outline=true gives its regions and headings with how many refs each holds,
-and section="<name>" gives one of them.`;
+and section="<name>" gives one of them. For an article, reader=true gives just its
+main text, without the site's menus, sidebars and footers.`;
 
 interface Tool {
   name: string;
@@ -30,8 +31,13 @@ const TOOLS: Tool[] = [
   {
     name: 'browser_goto',
     cmd: 'goto',
-    description: 'Open a URL (starting the browser if needed) and return the page as text (outline=true: only its regions and headings).',
-    inputSchema: { type: 'object', properties: { url: { type: 'string' }, outline: { type: 'boolean' } }, required: ['url'] },
+    description:
+      'Open a URL (starting the browser if needed) and return the page as text (outline=true: only its regions and headings; reader=true: only its main text, an article without menus, sidebars and footers).',
+    inputSchema: {
+      type: 'object',
+      properties: { url: { type: 'string' }, outline: { type: 'boolean' }, reader: { type: 'boolean' } },
+      required: ['url'],
+    },
   },
   {
     name: 'browser_search',
@@ -42,7 +48,8 @@ const TOOLS: Tool[] = [
   {
     name: 'browser_snapshot',
     cmd: 'snapshot',
-    description: 'Return the current page as text. With diff=true, only what changed since you last looked; with outline=true, its regions and headings; with section="<name>", one of them.',
+    description:
+      'Return the current page as text. With diff=true, only what changed since you last looked; with outline=true, its regions and headings; with section="<name>", one of them; with reader=true, only its main text.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -50,6 +57,7 @@ const TOOLS: Tool[] = [
         links: { type: 'boolean', description: 'Also list every link target' },
         outline: { type: 'boolean', description: 'Only the regions and headings, with how many lines and refs each holds' },
         section: { type: 'string', description: 'Only this region or heading (by its name) and what is under it' },
+        reader: { type: 'boolean', description: "Only the page's main text (an article without menus, sidebars and footers); refs work as usual" },
       },
     },
   },

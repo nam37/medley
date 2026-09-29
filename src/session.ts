@@ -10,7 +10,7 @@ import { diffLines } from './diff.ts';
 import { ABOUT, siteOf, type About, type PageInfo } from './info.ts';
 import { parseKey } from './keys.ts';
 import { findTokens } from './tokens.ts';
-import { renderParts, type El, type LayoutGroup, type PageModel, type Visual } from './render.ts';
+import { mainText, renderParts, type El, type LayoutGroup, type PageModel, type Visual } from './render.ts';
 
 const read = (file: string) => readFileSync(fileURLToPath(new URL(file, import.meta.url)), 'utf8');
 const EXTRACT = read('./extract.js');
@@ -211,6 +211,17 @@ function sectionText(s: Snap, name: string): string {
   return [...s.header, '', `section "${parts[i].name}" · lines ${parts[i].line + 1}–${end} of ${s.body.length}`, ...s.body.slice(parts[i].line, end)].join('\n');
 }
 
+/** The page's main text only, as a reader view shows it; all of the page when it has none to single out. */
+function readerText(s: Snap): string {
+  const lines = mainText(s.body, s.visual);
+  const count = (l: string[]) => l.filter((x) => x.trim()).length;
+  if (!lines) {
+    return [...s.header, '', "reader: this page has no main text to single out (it isn't an article), so here is all of it", '', ...s.body].join('\n');
+  }
+  const note = `reader: the page's main text, ${count(lines)} of ${count(s.body)} lines (menus, sidebars and footers left out)`;
+  return [...s.header, '', note, '', ...lines].join('\n');
+}
+
 const fullText = (s: Snap, links = false) =>
   [...s.header, '', ...s.body, ...(links && s.links.length ? ['', '── links ──', ...s.links] : [])].join('\n');
 
@@ -262,7 +273,7 @@ export class Session {
 
   // ---- commands -----------------------------------------------------------
 
-  goto(client: string, url: string, { links = false, outline = false } = {}): Promise<string> {
+  goto(client: string, url: string, { links = false, outline = false, reader = false } = {}): Promise<string> {
     if (this.dialog) this.answerQuietly();
     const outcome: Outcome = { full: true };
     let what = `opened ${url}`;
@@ -285,17 +296,21 @@ export class Session {
       if (outline && outcome.full && !this.dialog) {
         return [...text.split('\n').filter((l) => l.startsWith('note: ')), outlineText(snap)].join('\n');
       }
+      // Or its main text.
+      if (reader && outcome.full && !this.dialog) {
+        return [...text.split('\n').filter((l) => l.startsWith('note: ')), readerText(snap)].join('\n');
+      }
       return links ? `${text}\n\n── links ──\n${snap.links.join('\n')}` : text;
     });
   }
 
-  async snapshot(client: string, { diff = false, links = false, outline = false, section = '' } = {}): Promise<string> {
+  async snapshot(client: string, { diff = false, links = false, outline = false, section = '', reader = false } = {}): Promise<string> {
     if (this.dialog) return this.dialogText();
     await this.ensureTab();
     if (diff) return this.report(client, 'changes since your last look');
     const snap = await this.capture();
     this.baselines.set(client, snap);
-    const page = section ? sectionText(snap, section) : outline ? outlineText(snap) : fullText(snap, links);
+    const page = section ? sectionText(snap, section) : outline ? outlineText(snap) : reader ? readerText(snap) : fullText(snap, links);
     return [...this.takeNotes(), page].join('\n');
   }
 

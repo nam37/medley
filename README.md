@@ -105,6 +105,8 @@ sweeps across the `medley` badge and the status line says what's happening.
 | : | run any session command, e.g. `press Escape`, `wait 2`, `select 6 High` |
 | v | cycle the grid: no grid → partial grid (the page's main columns, like a sidebar beside the content) → advanced grid (the page as laid out, with its colors and pictures) |
 | i | the page's pictures one at a time, as big as the view fits them, starting from the first in view: ← → step, Esc closes |
+| =, or a click on the title or address | page info, as a browser's padlock menu shows it: the connection and certificate, cookies and site data (c, then y, clears this site's), what the page says about itself, and what loading it took |
+| \ | the page's source, as the server sent it (with find); \ again brings the page back |
 | r, R | reload the page, like a browser's refresh (R bypasses the cache) |
 | w | wait 2 seconds and show what the page changed by itself |
 | y n | accept or dismiss a `confirm()` the page opened (a `prompt()` asks for its answer) |
@@ -172,6 +174,9 @@ medley wait [seconds]               let the page work, then show what changed
 medley wait --for <text> [seconds]  wait until the text (or the page title) shows, then show what changed
 medley wait --gone <text> [seconds] wait until it doesn't (a "Loading…" going away)
 medley screenshot [file] [--full]   save a PNG of the window, or of the whole page
+medley info [--json]                page info: connection and certificate, cookies and site data, about the page, loading
+medley clear-site-data              delete the page's site's cookies and stored data (signs you out there)
+medley source [--dom]               the page's HTML as the server sent it (--dom: as it is now)
 medley dialog accept [text] | dismiss
 medley status | stop
 
@@ -224,7 +229,33 @@ A few of them save an agent round trips: `browser_fill` fills a whole form and
 reports once, `browser_wait` with `text` waits for something to show up (or go
 away, with `gone`) instead of guessing how long, `browser_snapshot` with
 `outline` or `section` reads a long page in parts, and `browser_screenshot`
-returns an image of the page for what text can't show.
+returns an image of the page for what text can't show. `browser_page_info`
+answers the questions a browser's padlock menu does (is the connection secure,
+whose certificate, which sites' cookies the page uses, how many other sites it
+contacted), and `browser_source` returns the HTML, for meta tags and
+structured data the text leaves out.
+
+`info` reads like this (for The Verge):
+
+```
+Connection
+  Secure: TLS 1.3 (X25519MLKEM768, AES_128_GCM) over HTTP/2 from 151.101.65.91:443
+  Certificate for *.theverge.com (and 22 other names), issued by GlobalSign Atlas R3 DV TLS CA 2026 Q2, valid Jun 26, 2026 to Jan 11, 2027
+Cookies and site data
+  38 cookies from theverge.com; 79 from 24 other sites: sonobi.com 20, pubmatic.com 11, twitter.com 5, rubiconproject.com 5, smartadserver.com 3 and 19 more
+  351 kB stored: indexeddb 351 kB, service workers 720 bytes
+About this page
+  The Verge
+  https://www.theverge.com/
+  "The Verge is about technology and how it makes us feel. …"
+  American English
+  3,656 words, about 16 minutes to read
+  504 links · 10 fields in 1 form · 115 pictures · 18 frames
+Loading
+  200 OK, text/html · parsed in 1.8 s · still loading after 8.6 s
+  351 requests to 96 hosts (65 other sites) · at least 4.2 MB transferred
+  Other sites it asked: adsafeprotected.com, ad-delivery.net, cookielaw.org, doubleclick.net, google.com, … and 57 more
+```
 
 ## Output format
 
@@ -331,7 +362,8 @@ against a real session on `test/app.html`: keys, a field prompt, a simulated
 agent acting in the same session, reload, a file prompt, the working badge,
 a masked password prompt, a download, bookmarks and history, the refs list, find, a command,
 a mouse click, back, a `confirm()`, a page that moves on by itself, the picture
-viewer, the help overlay, and a search from the address prompt. It prints each frame as it goes.
+viewer, page info, the source view, the help overlay, and a search from the
+address prompt. It prints each frame as it goes.
 `bun run test:idle` starts a session that stops after 3 idle seconds and
 checks that a command keeps it going and that it then stops by itself.
 `bun run test:frames` serves a page on 127.0.0.1 that embeds a form from

@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { codeStamp, removeSessionInfo, writeSessionInfo, type Command, type SessionEvent } from './client.ts';
+import { infoText } from './info.ts';
 import { Session } from './session.ts';
 
 // How long the session waits for a command before it stops (MEDLEY_IDLE_MINUTES, default 30).
@@ -122,6 +123,8 @@ function summarize({ cmd, args }: Command, text: string): string {
   if (cmd === 'pictures') return "took the page's pictures";
   if (cmd === 'tabs') return 'listed the tabs';
   if (cmd === 'downloads') return 'listed the downloads';
+  if (cmd === 'info') return 'looked at the page info';
+  if (cmd === 'source') return "read the page's source";
   if (cmd === 'history' && args?.n === undefined) return 'listed the history';
   return text.split('\n')[0];
 }
@@ -232,6 +235,14 @@ async function dispatch({ cmd, args = {} }: Command, client: string): Promise<st
       return JSON.stringify(await session.screenshot({ full: !!args.full }));
     case 'downloads':
       return session.downloadList();
+    case 'info':
+      return args.json ? JSON.stringify(await session.info()) : infoText(await session.info());
+    case 'clear-site-data':
+      return session.clearSiteData();
+    case 'source': {
+      const source = await session.source({ dom: !!args.dom });
+      return args.json ? JSON.stringify(source) : source.text;
+    }
     case 'history':
       if (args.n !== undefined) return session.historyGo(client, entry(args.n));
       return args.json ? JSON.stringify(await session.historyList()) : session.historyText();

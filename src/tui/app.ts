@@ -3,10 +3,13 @@
 // session, so it can watch an agent browse and take over at any point.
 
 import {
+  bold,
   BoxRenderable,
+  fg,
   InputRenderable,
   InputRenderableEvents,
   NativeImage,
+  StyledText,
   TextAttributes,
   TextRenderable,
   type CliRenderer,
@@ -18,6 +21,7 @@ import { resolve } from 'node:path';
 import { addBookmark, readBookmarks, removeBookmark } from '../bookmarks.ts';
 import { looksLikeAddress, parseCommand, searchUrl, splitFlags, splitWords, toUrl } from '../commands.ts';
 import { changedLines } from '../diff.ts';
+import { infoText, type PageInfo } from '../info.ts';
 import type { Screenshot, View } from '../session.ts';
 import { Bar, fit as fitText, type Segment } from './bar.ts';
 import { GRID_LABELS, GRID_MODES, PageView, type PageRef } from './page-view.ts';
@@ -90,6 +94,8 @@ const HELP = [
   't                  open the selected link in a new tab',
   'T, or click tab 2/3 the open tabs: a number, then Enter switches (d closes)',
   'v                  grid: none → partial (main columns) → advanced (nested too)',
+  '=, or click the address  page info: connection, cookies and site data, about the page',
+  '\\                  the page’s source, as the server sent it (\\ again: the page)',
   'i                  the page’s pictures one at a time, full size: ← → step, Esc closes',
   'a                  bookmark this page',
   "B                  bookmarks and this tab's history: a number, then Enter opens",
@@ -111,6 +117,11 @@ export class App {
   private promptLabel: Bar;
   private input: InputRenderable;
   private help: BoxRenderable;
+  private infoBox: BoxRenderable; // page info (=)
+  private infoContent: TextRenderable;
+  private infoSite = ''; // the site whose data c would clear
+  private infoClearing = false; // asking whether to clear it
+  private sourceShown = false; // the page's source is showing instead of the page (\)
   private pages: BoxRenderable; // the bookmarks-and-history list (B)
   private pagesText: TextRenderable;
   private refsBox: BoxRenderable; // the refs pull-down (l, or a click on "N refs")
@@ -156,7 +167,8 @@ export class App {
       bg: THEME.barBg,
       // "N refs" is on the right: a click there pulls down the list of refs.
       onClick: (x, right) => {
-        if (right < 0 || x < right) return;
+        // The title and address, like a browser's icon beside its address: the page info.
+        if (right < 0 || x < right) return x > 8 ? void this.openInfo() : undefined;
         // "tab 2/3 · " comes first when there are tabs; the rest is "N refs".
         const tabs = this.tabs.count > 1 ? `tab ${this.tabs.current}/${this.tabs.count}`.length : 0;
         if (x < right + tabs) void this.openTabs();
@@ -205,6 +217,23 @@ export class App {
     });
     this.help.add(new TextRenderable(renderer, { content: HELP.join('\n'), fg: THEME.barFg, paddingLeft: 1 }));
     renderer.root.add(this.help);
+    this.infoBox = new BoxRenderable(renderer, {
+      position: 'absolute',
+      top: 2,
+      left: 2,
+      right: 2,
+      height: 5,
+      zIndex: 10,
+      visible: false,
+      border: true,
+      borderStyle: 'rounded',
+      borderColor: THEME.accentBg,
+      title: ' page info ',
+      backgroundColor: THEME.barBg,
+    });
+    this.infoContent = new TextRenderable(renderer, { content: '', fg: THEME.barFg, paddingLeft: 1, paddingRight: 1, wrapMode: 'word' });
+    this.infoBox.add(this.infoContent);
+    renderer.root.add(this.infoBox);
 
     this.pages = new BoxRenderable(renderer, {
       position: 'absolute',
@@ -377,6 +406,7 @@ export class App {
       const fresh = page.doc !== this.current?.doc;
       const changed = fresh ? new Set<number>() : changedLines(this.current!.body, page.body);
       this.current = page;
+      this.sourceShown = false; // the page replaces its source
       this.page.setPage(page.body, new Map(page.labels), changed, fresh, page.layout, page.visual ?? null);
       if (fresh) this.viewer.close(); // its pictures were the old page's
       if (this.refsBox.visible) this.refreshRefs(); // the page changed under the open list
@@ -548,6 +578,7 @@ export class App {
       this.help.visible = false;
       return;
     }
+    if (this.infoBox.visible) return this.infoKey(key);
     if (this.picker) return this.pickerKey(key);
     if (this.refsBox.visible) return this.refsKey(key);
     if (this.viewer.visible) return this.viewerKey(key);
@@ -674,6 +705,8 @@ export class App {
       this.help.visible = true;
       return;
     }
+    if (ch === '=') return void this.openInfo();
+    if (ch === '\\') return void this.toggleSource();
     if (ch === '[' || ch === ']') {
       const { current, count } = this.tabs;
       if (count < 2) return this.say('there is only one tab', 'info');
@@ -1009,6 +1042,98 @@ export class App {
     }
   }
 
+  // ---- page info and source --------------------------------------------------------
+
+  /** =: the page info, in a box over the page: section headings in bold, the rest as it reads. */
+  private async openInfo() {
+    if (!this.current) return this.say('no page open', 'info');
+    this.infoClearing = false;
+    this.infoSite = '';
+    this.showInfo('looking…', ' page info ');
+    try {
+      const info = JSON.parse((await this.backend.request('info', { json: true })).text) as PageInfo;
+      if (!this.infoBox.visible) return; // closed meanwhile
+      this.infoSite = info.site;
+      this.showInfo(infoText(info), this.infoTitle());
+    } catch (e) {
+      this.infoBox.visible = false;
+      this.say((e as Error).message.split('\n')[0], 'error');
+    }
+  }
+
+  private infoTitle(): string {
+    return this.infoSite ? ` page info · c clears the cookies and data of ${this.infoSite} · Esc closes ` : ' page info · Esc closes ';
+  }
+
+  private showInfo(text: string, title: string) {
+    const lines = text.split('\n');
+    const accent = fg(THEME.accentBg);
+    const plain = fg(THEME.barFg);
+    this.infoContent.content = new StyledText(
+      lines.map((l, i) => {
+        const end = i < lines.length - 1 ? '\n' : '';
+        return l.startsWith(' ') || l === 'looking…' ? plain(l + end) : bold(accent(l + end));
+      }),
+    );
+    // As tall as its lines, wrapped to the box, up to the view's height.
+    const inner = Math.max(10, this.renderer.width - 8);
+    const rows = lines.reduce((n, l) => n + Math.max(1, Math.ceil(l.length / inner)), 0);
+    this.infoBox.height = Math.min(rows + 2, Math.max(5, this.renderer.height - 5));
+    this.infoBox.title = title;
+    this.infoBox.visible = true;
+  }
+
+  /** In the page info: c asks to clear the site's cookies and data, y does it; any other key closes. */
+  private infoKey(key: KeyEvent) {
+    if (this.infoClearing) {
+      this.infoClearing = false;
+      if (key.name === 'y') {
+        this.infoBox.visible = false;
+        return void this.run('clear-site-data');
+      }
+      this.infoBox.title = this.infoTitle();
+      return;
+    }
+    if (key.name === 'c' && this.infoSite) {
+      this.infoClearing = true;
+      this.infoBox.title = ` clear the cookies and data of ${this.infoSite}? It signs you out there · y clears · any other key keeps `;
+      return;
+    }
+    this.infoBox.visible = false;
+  }
+
+  /** \: the page's source in place of the page, as the server sent it; \ again brings the page back. */
+  private async toggleSource() {
+    const page = this.current;
+    if (this.sourceShown) {
+      this.sourceShown = false;
+      if (page) this.page.setPage(page.body, new Map(page.labels), new Set(), true, page.layout, page.visual ?? null);
+      this.picturesFor = ''; // the source replaced its pictures
+      void this.loadPictures();
+      this.drawTop();
+      return this.say('', 'info');
+    }
+    if (!page) return this.say('no page open', 'info');
+    this.say('reading the source…', 'info');
+    try {
+      const source = JSON.parse((await this.backend.request('source', { json: true })).text) as { text: string; what: string; url: string };
+      if (this.current?.doc !== page.doc) return; // moved on meanwhile
+      // Minified pages put everything on a few huge lines: break those between tags, so they read.
+      let lines = source.text
+        .replace(/\r\n?/g, '\n')
+        .split('\n')
+        .flatMap((l) => (l.length > 400 ? l.replace(/>\s*</g, '>\n<').split('\n') : [l]));
+      const total = lines.length;
+      if (lines.length > 50_000) lines = [...lines.slice(0, 50_000), `… ${total - 50_000} more lines`];
+      this.sourceShown = true;
+      this.page.setPage(['```', ...lines, '```'], new Map(), new Set(), true, [], null);
+      this.drawTop();
+      this.say(`source of ${source.url}, ${source.what} · ${total.toLocaleString('en-US')} lines · \\ for the page`, 'info');
+    } catch (e) {
+      this.say((e as Error).message.split('\n')[0], 'error');
+    }
+  }
+
   /** i: the page's pictures one at a time, as big as the view, from the first one in view. */
   private openViewer() {
     const { list, start } = this.page.viewablePictures();
@@ -1151,7 +1276,8 @@ export class App {
     else left.push({ text: 'no page open', fg: THEME.barDim });
     const grid = this.page.gridMode === 'none' ? '' : ` · ${GRID_LABELS[this.page.gridMode]}`;
     const tab = this.tabs.count > 1 ? `tab ${this.tabs.current}/${this.tabs.count} · ` : '';
-    const right: Segment[] = p ? [{ text: `${tab}${this.page.refCount} refs · ${this.page.position}${grid} `, fg: THEME.barDim }] : [];
+    const what = this.sourceShown ? 'source' : `${this.page.refCount} refs`;
+    const right: Segment[] = p ? [{ text: `${tab}${what} · ${this.page.position}${this.sourceShown ? '' : grid} `, fg: THEME.barDim }] : [];
     this.top.set(left, right);
   }
 

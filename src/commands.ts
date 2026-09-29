@@ -20,9 +20,11 @@ export interface CommandFlags {
   gone?: string; // wait --gone <text>
   full?: boolean; // screenshot --full
   newTab?: boolean; // click --new-tab
+  dom?: boolean; // source --dom
+  json?: boolean; // info --json (the CLI's own option)
 }
 
-const FLAGS = new Set(['--links', '--diff', '--submit', '--hard', '--outline', '--full', '--new-tab']);
+const FLAGS = new Set(['--links', '--diff', '--submit', '--hard', '--outline', '--full', '--new-tab', '--dom']);
 
 export class UsageError extends Error {}
 
@@ -118,9 +120,14 @@ export function parseCommand([command, ...rest]: string[], flags: CommandFlags =
     case 'back':
     case 'forward':
     case 'downloads':
+    case 'clear-site-data':
     case 'status':
     case 'stop':
       return { cmd: command, args: {} };
+    case 'info':
+      return { cmd: 'info', args: { json: flags.json } };
+    case 'source':
+      return { cmd: 'source', args: { dom: flags.dom } };
     case 'wait':
       return { cmd: 'wait', args: { seconds: rest[0], for: flags.for, gone: flags.gone } };
     case 'fill': {

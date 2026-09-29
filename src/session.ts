@@ -7,6 +7,7 @@ import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Browser, sleep, type Dialog, type DownloadEvent, type LaunchOptions, type Page } from './browser.ts';
 import { diffLines } from './diff.ts';
+import { ABOUT, siteOf, type About, type PageInfo } from './info.ts';
 import { parseKey } from './keys.ts';
 import { findTokens } from './tokens.ts';
 import { renderParts, type El, type LayoutGroup, type PageModel, type Visual } from './render.ts';
@@ -620,6 +621,88 @@ export class Session {
       const at = await this.locate(ref);
       await this.page.hover(at.x, at.y);
     });
+  }
+
+  // ---- page info and source ---------------------------------------------------
+
+  /** The connection, cookies and site data, what the page says about itself, and what loading it took (see info.ts). */
+  async info(): Promise<PageInfo> {
+    if (this.dialog) throw new Error(this.dialogText());
+    await this.ensureTab();
+    const about = await this.page.evaluate<About & { url: string; title: string; origin: string }>(
+      `Object.assign(${ABOUT}, { url: location.href, title: document.title, origin: location.origin })`,
+    );
+    const url = new URL(about.url);
+    const web = url.protocol === 'https:' || url.protocol === 'http:';
+    const site = web ? siteOf(url.host) : '';
+    let cookies: PageInfo['cookies'] = null;
+    let storage: PageInfo['storage'] = null;
+    if (web) {
+      // The cookies that go with the page's requests: its own site's, and those of the sites it asked for things.
+      const urls = [about.url, ...about.hosts.slice(0, 100).map((h) => `https://${h}/`)];
+      const { cookies: all } = await this.page.send('Network.getCookies', { urls }).catch(() => ({ cookies: [] }));
+      const bySite = new Map<string, number>();
+      for (const c of all as { domain: string }[]) {
+        const s = siteOf(c.domain);
+        bySite.set(s, (bySite.get(s) ?? 0) + 1);
+      }
+      const others = [...bySite].filter(([s]) => s !== site).map(([s, count]) => ({ site: s, count }));
+      cookies = { site: bySite.get(site) ?? 0, others: others.sort((a, b) => b.count - a.count) };
+      const used = await this.page.send('Storage.getUsageAndQuota', { origin: about.origin }).catch(() => null);
+      if (used) {
+        storage = {
+          usage: used.usage,
+          parts: (used.usageBreakdown ?? []).map((p: { storageType: string; usage: number }) => ({ type: p.storageType, usage: p.usage })),
+        };
+      }
+    }
+    // How the document arrived, if it's this one (not one a script put in place since).
+    const doc = this.page.document;
+    const response = doc && doc.url.split('#')[0] === about.url.split('#')[0] ? (({ requestId, ...arrived }) => arrived)(doc) : null;
+    return {
+      url: about.url,
+      title: about.title,
+      site,
+      connection: { scheme: url.protocol, response },
+      cookies,
+      storage,
+      about,
+    };
+  }
+
+  /** Delete the cookies and stored data (local storage, IndexedDB, caches…) of the page's site. */
+  async clearSiteData(): Promise<string> {
+    if (this.dialog) throw new Error(this.dialogText());
+    await this.ensureTab();
+    const { href, origin, host } = await this.page.evaluate<{ href: string; origin: string; host: string }>(
+      '({ href: location.href, origin: location.origin, host: location.host })',
+    );
+    if (!/^https?:/.test(href)) throw new Error('only a web page has site data to clear');
+    const site = siteOf(host);
+    const { cookies } = await this.page.send('Network.getCookies', { urls: [href] });
+    const mine = (cookies as { name: string; domain: string; path: string }[]).filter((c) => siteOf(c.domain) === site);
+    for (const c of mine) await this.page.send('Network.deleteCookies', { name: c.name, domain: c.domain, path: c.path });
+    const used = await this.page.send('Storage.getUsageAndQuota', { origin }).catch(() => ({ usage: 0 }));
+    await this.page.send('Storage.clearDataForOrigin', { origin, storageTypes: 'all' });
+    const stored = used.usage ? ` and ${Math.round(used.usage / 1000).toLocaleString('en-US')} kB of stored data` : '';
+    return `cleared ${mine.length} ${mine.length === 1 ? 'cookie' : 'cookies'}${stored} for ${site}; reload to see the page without them`;
+  }
+
+  /**
+   * The page's HTML: as the server sent it, or with `dom`, as the page is now
+   * (after its scripts ran). Falls back to the latter when the browser no
+   * longer has what was sent.
+   */
+  async source({ dom = false } = {}): Promise<{ text: string; what: string; url: string }> {
+    if (this.dialog) throw new Error(this.dialogText());
+    await this.ensureTab();
+    const url = await this.page.evaluate<string>('location.href');
+    const sent = !dom && this.page.document?.url.split('#')[0] === url.split('#')[0] ? await this.page.documentSource() : null;
+    if (sent !== null) return { text: sent, what: 'as the server sent it', url };
+    const now = await this.page.evaluate<string>(
+      `(document.doctype ? '<!DOCTYPE ' + document.doctype.name + '>\\n' : '') + document.documentElement.outerHTML`,
+    );
+    return { text: now, what: dom ? 'as the page is now' : 'as the page is now (the browser no longer has what the server sent)', url };
   }
 
   // ---- tabs -----------------------------------------------------------------

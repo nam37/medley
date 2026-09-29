@@ -41,6 +41,10 @@ session commands:
   wait --gone <text> [seconds]    wait until it doesn't (a "Loading…" going away)
   fill <ref>=<value>... [--submit]  fill fields at once: text, a select's option, a checkbox on/off
   screenshot [file] [--full]      save a PNG of the window (--full: the whole page)
+  info [--json]                   page info: the connection and its certificate, cookies and site
+                                  data, what the page says about itself, what loading it took
+  clear-site-data                 delete the page's site's cookies and stored data (signs you out there)
+  source [--dom]                  the page's HTML as the server sent it (--dom: as it is now)
   dialog accept [text]            answer a confirm() or prompt() the page opened
   dialog dismiss
   status, stop
@@ -89,6 +93,7 @@ const opts = {
   gone: undefined as string | undefined,
   full: false,
   newTab: false,
+  dom: false,
   json: false,
   color:!!process.stdout.isTTY && !process.env.NO_COLOR,
   width: undefined as number | undefined,
@@ -113,6 +118,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--gone') opts.gone = value();
   else if (a === '--full') opts.full = true;
   else if (a === '--new-tab') opts.newTab = true;
+  else if (a === '--dom') opts.dom = true;
   else if (a === '--json') opts.json = true;
   else if (a === '--color') opts.color = true;
   else if (a === '--no-color') opts.color = false;
@@ -172,7 +178,9 @@ if (!command) {
 } else {
   try {
     const text = await run();
-    process.stdout.write((opts.color && !opts.json ? colorize(text) : text) + '\n');
+    // Page info and a page's source aren't page text: printed as they are, for reading, saving or piping.
+    const plain = opts.json || command === 'source' || command === 'info';
+    process.stdout.write((opts.color && !plain ? colorize(text) : text) + '\n');
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'EPIPE') process.exit(0);
     if (e instanceof UsageError) fail(`${e.message}\n\n${USAGE}`, 2);

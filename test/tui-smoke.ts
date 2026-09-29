@@ -262,6 +262,17 @@ try {
   await until('the viewer to close', (f) => f.includes('# Todos') && !f.includes('2/2'));
   console.log('\n→ went on to the wordmark (a CSS background); Esc closed the viewer');
 
+  // = shows the page info; \ shows the page's source, and brings the page back.
+  await keys('=');
+  show('= shows the page info', await until('the info', (f) => f.includes('A file on this computer') && f.includes('About this page')));
+  await keys('ESCAPE');
+  await until('the info to close', (f) => !f.includes('About this page'));
+  await keys('\\');
+  show('\\ shows the source', await until('the source', (f) => f.includes('<title>Medley test app</title>')));
+  await keys('\\');
+  await until('the page again', (f) => f.includes('# Todos') && !f.includes('<title>'));
+  console.log('\n\\ again brought the page back');
+
   await keys('?');
   show('? shows the keys', await until('the help', (f) => f.includes('any key to close')));
   await keys('x');

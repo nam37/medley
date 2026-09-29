@@ -141,6 +141,20 @@ const TOOLS: Tool[] = [
     inputSchema: { type: 'object', properties: {} },
   },
   {
+    name: 'browser_page_info',
+    cmd: 'info',
+    description:
+      "Page info, as a browser's padlock menu shows it: whether the connection is secure and its certificate, the cookies and stored data of this site and of other sites the page uses, what the page says about itself (description, language, author, publish dates, word count), and what loading it took (requests, other sites contacted).",
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'browser_source',
+    cmd: 'source',
+    description:
+      "The page's HTML: as the server sent it, or with dom=true as the page is now, after its scripts ran. For what the text leaves out: meta tags, structured data, markup. Long sources are cut at max_chars (default 100000).",
+    inputSchema: { type: 'object', properties: { dom: { type: 'boolean' }, max_chars: { type: 'integer' } } },
+  },
+  {
     name: 'browser_drag',
     cmd: 'drag',
     description:
@@ -255,6 +269,13 @@ export async function serveMcp(sessionName: string, start: StartOptions) {
                 { type: 'text', text: `${shot.url} · ${shot.width}×${shot.height}` },
               ],
             };
+          }
+          if (tool.cmd === 'source') {
+            const max = Number(args.max_chars) > 0 ? Number(args.max_chars) : 100_000;
+            if (text.length > max) {
+              const note = `\n\n[cut at ${max.toLocaleString('en-US')} of ${text.length.toLocaleString('en-US')} characters; ask for more with max_chars]`;
+              return { content: [{ type: 'text', text: text.slice(0, max) + note }] };
+            }
           }
           return { content: [{ type: 'text', text }] };
         } catch (e) {

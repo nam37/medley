@@ -130,6 +130,29 @@ const IGNORED_REQUESTS = new Set([
 // A request still open after this long is a long-poll or a stream; settling doesn't wait for it.
 const STALE_REQUEST_MS = 3000;
 
+/** How the page's document arrived: the response, and the connection's security when it was https. */
+export interface DocumentResponse {
+  requestId: string;
+  url: string;
+  status: number;
+  statusText: string;
+  mimeType: string;
+  protocol?: string; // h2, http/1.1, h3
+  remoteAddress?: string;
+  fromCache?: boolean;
+  securityState?: string; // secure, insecure, neutral
+  security?: {
+    protocol: string; // TLS 1.3
+    keyExchange: string;
+    cipher: string;
+    subject: string;
+    issuer: string;
+    validFrom: number; // seconds since 1970
+    validTo: number;
+    sans: string[];
+  };
+}
+
 /** A frame of the page, and the CDP session that owns its document. */
 interface Frame {
   session: string;
@@ -159,6 +182,7 @@ export class Page {
   get framesSettling(): boolean {
     return this.attaching.size > 0 || Date.now() - this.framesChangedAt < 2000;
   }
+  document: DocumentResponse | null = null; // how the page's document arrived
   onDialog: ((d: Dialog) => void) | null = null;
   onNavigated: (() => void) | null = null; // the main frame got a new document
   closed = false; // the tab went away; waiting on it is pointless
@@ -180,6 +204,10 @@ export class Page {
         case 'Network.loadingFinished':
         case 'Network.loadingFailed':
           this.inflight.delete(p.requestId);
+          break;
+        case 'Network.responseReceived':
+          // The main frame's id is its target's.
+          if (p.type === 'Document' && (p.frameId === this.mainFrameId || p.frameId === this.targetId)) this.documentResponse(p);
           break;
         case 'Page.frameStartedLoading':
           if (p.frameId === this.mainFrameId) this.loading = true;
@@ -468,6 +496,43 @@ export class Page {
       while (this.loading && !this.closed && Date.now() < deadline) await sleep(50);
       await Promise.all([this.networkQuiet(), this.evaluate(DOM_QUIET(300, 1500)).catch(() => {})]);
       if (!this.loading) return;
+    }
+  }
+
+  private documentResponse(p: { requestId: string; response: any }) {
+    const r = p.response;
+    const s = r.securityDetails;
+    this.document = {
+      requestId: p.requestId,
+      url: r.url,
+      status: r.status,
+      statusText: r.statusText,
+      mimeType: r.mimeType,
+      protocol: r.protocol,
+      remoteAddress: r.remoteIPAddress ? `${r.remoteIPAddress}${r.remotePort ? `:${r.remotePort}` : ''}` : undefined,
+      fromCache: r.fromDiskCache || r.fromServiceWorker || undefined,
+      securityState: r.securityState,
+      security: s && {
+        protocol: s.protocol,
+        keyExchange: s.keyExchangeGroup || s.keyExchange,
+        cipher: s.cipher,
+        subject: s.subjectName,
+        issuer: s.issuer,
+        validFrom: s.validFrom,
+        validTo: s.validTo,
+        sans: s.sanList ?? [],
+      },
+    };
+  }
+
+  /** The document's source as the server sent it, when the browser still has it. */
+  async documentSource(): Promise<string | null> {
+    if (!this.document) return null;
+    try {
+      const { body, base64Encoded } = await this.send('Network.getResponseBody', { requestId: this.document.requestId });
+      return base64Encoded ? Buffer.from(body, 'base64').toString('utf8') : body;
+    } catch {
+      return null;
     }
   }
 

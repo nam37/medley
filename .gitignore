@@ -3,3 +3,4 @@ node_modules/
 preview.html
 .DS_Store
 videos/
+.mcp.json

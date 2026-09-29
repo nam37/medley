@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { Browser, sleep, type Dialog, type DownloadEvent, type LaunchOptions, type Page } from './browser.ts';
 import { diffLines } from './diff.ts';
 import { parseKey } from './keys.ts';
-import { renderParts, type LayoutGroup, type PageModel, type Visual } from './render.ts';
+import { renderParts, type El, type LayoutGroup, type PageModel, type Visual } from './render.ts';
 
 const read = (file: string) => readFileSync(fileURLToPath(new URL(file, import.meta.url)), 'utf8');
 const EXTRACT = read('./extract.js');
@@ -70,6 +70,62 @@ function size(bytes: number): string {
 
 const progress = (received: number, total: number) => (total ? `${size(received)} of ${size(total)}` : `${size(received)} so far`);
 
+const TOP = 'top';
+const KEY_SEP = '|';
+
+/**
+ * Page-wide ref numbers. Each document (the page's, and each cross-origin
+ * frame's) numbers its own elements; this gives each (document, number) pair
+ * one number for the whole page, keeping the page's own numbers wherever it
+ * can, so a page without such frames reads exactly as its own numbering.
+ */
+class RefMap {
+  private toGlobal = new Map<string, number>();
+  private fromGlobal = new Map<number, { key: string; local: number }>();
+  private next = 1;
+
+  global(key: string, local: number): number {
+    const id = `${key}${KEY_SEP}${local}`;
+    let g = this.toGlobal.get(id);
+    if (g !== undefined) return g;
+    g = key === TOP && !this.fromGlobal.has(local) ? local : this.next;
+    while (this.fromGlobal.has(g)) g++;
+    this.toGlobal.set(id, g);
+    this.fromGlobal.set(g, { key, local });
+    this.next = Math.max(this.next, g + 1);
+    return g;
+  }
+
+  resolve(global: number): { key: string; local: number } | undefined {
+    return this.fromGlobal.get(global);
+  }
+}
+
+/**
+ * Give every ref in a model tree its page-wide number and shift its boxes by
+ * (dx, dy); returns the frame placeholders found (to be read and filled in).
+ */
+function renumber(root: El | null, global: (ref: number) => number, dx: number, dy: number): El[] {
+  const frames: El[] = [];
+  const visit = (n: El) => {
+    if (n.ref !== undefined) n.ref = global(n.ref);
+    if (n.r && (dx || dy)) n.r = [n.r[0] + dx, n.r[1] + dy, n.r[2], n.r[3]];
+    if (n.tag === 'iframe' && n.frame) frames.push(n);
+    for (const c of n.c ?? []) if (typeof c === 'object') visit(c);
+    for (const row of n.rows ?? []) for (const cell of row) for (const c of cell.c) if (typeof c === 'object') visit(c);
+  };
+  if (root) visit(root);
+  return frames;
+}
+
+/** Whether a model still has an iframe placeholder (a frame not read in). */
+function hasPlaceholder(root: El | null): boolean {
+  const visit = (n: El): boolean =>
+    n.tag === 'iframe' || (n.c ?? []).some((c) => typeof c === 'object' && visit(c)) ||
+    (n.rows ?? []).some((row) => row.some((cell) => cell.c.some((c) => typeof c === 'object' && visit(c))));
+  return !!root && visit(root);
+}
+
 const fullText = (s: Snap, links = false) =>
   [...s.header, '', ...s.body, ...(links && s.links.length ? ['', '── links ──', ...s.links] : [])].join('\n');
 
@@ -81,6 +137,7 @@ export class Session {
   private startedAt = Date.now();
   private tabs: Page[]; // open tabs, in the order they opened; `page` is the current one
   private openers = new Map<Page, Page>(); // the tab each popup came from, to return to when it closes
+  private refs: { doc: string; map: RefMap } | null = null; // page-wide ref numbers for the current document
   private acting = 0; // commands running now; a navigation they cause is theirs to report
   private changePending = false;
   private downloads: { name: string; path: string; bytes: number }[] = []; // finished, in order
@@ -153,8 +210,7 @@ export class Session {
   async click(client: string, ref: number): Promise<string> {
     await this.checkRefs(client);
     return this.act(client, `clicked ${this.label(client, ref)}`, async () => {
-      const at = await this.call<{ x: number; y: number; error?: string }>('locate', ref);
-      if (at.error) throw new Error(at.error);
+      const at = await this.locate(ref);
       await this.page.click(at.x, at.y);
     });
   }
@@ -163,7 +219,12 @@ export class Session {
     await this.checkRefs(client);
     const what = `typed into ${this.label(client, ref)}${submit ? ' and pressed Enter' : ''}`;
     return this.act(client, what, async () => {
-      const r = await this.call<{ hasText?: boolean; error?: string }>('focus', ref);
+      // Keys go to the focused frame, and a frame gets focus the way a person gives it: a click.
+      if (this.target(ref).frame) {
+        const at = await this.locate(ref);
+        await this.page.click(at.x, at.y);
+      }
+      const r = await this.callRef<{ hasText?: boolean; error?: string }>('focus', ref);
       if (r.error) throw new Error(r.error);
       if (text) await this.page.insertText(text);
       else if (r.hasText) await this.page.press(parseKey('Delete')); // clear the selected text
@@ -176,7 +237,7 @@ export class Session {
     const field = this.label(client, ref);
     let chosen = option;
     const action = async () => {
-      const r = await this.call<{ text?: string; error?: string }>('select', ref, option);
+      const r = await this.callRef<{ text?: string; error?: string }>('select', ref, option);
       if (r.error) throw new Error(r.error);
       chosen = r.text!;
     };
@@ -193,7 +254,8 @@ export class Session {
       const ref = Number(to);
       await this.checkRefs(client);
       return this.act(client, `scrolled to ${this.label(client, ref)}`, async () => {
-        const r = await this.call<{ error?: string }>('scrollIntoView', ref);
+        await this.revealFrame(this.target(ref).frame);
+        const r = await this.callRef<{ error?: string }>('scrollIntoView', ref);
         if (r.error) throw new Error(r.error);
       }, { showScroll: true });
     }
@@ -220,9 +282,10 @@ export class Session {
     const names = files.map((f) => basename(f)).join(', ');
     const what = `chose ${files.length === 1 ? names : `${files.length} files (${names})`} for ${this.label(client, ref)}`;
     return this.act(client, what, async () => {
-      const r = await this.call<{ error?: string }>('fileField', ref, files.length);
+      const r = await this.callRef<{ error?: string }>('fileField', ref, files.length);
       if (r.error) throw new Error(r.error);
-      await this.page.setFiles(`(${ACTIONS}).element(${ref})`, files);
+      const { frame, local } = this.target(ref);
+      await this.page.setFiles(`(${ACTIONS}).element(${local})`, files, frame);
     });
   }
 
@@ -280,8 +343,7 @@ export class Session {
   async hover(client: string, ref: number): Promise<string> {
     await this.checkRefs(client);
     return this.act(client, `hovered over ${this.label(client, ref)}`, async () => {
-      const at = await this.call<{ x: number; y: number; error?: string }>('locate', ref);
-      if (at.error) throw new Error(at.error);
+      const at = await this.locate(ref);
       await this.page.hover(at.x, at.y);
     });
   }
@@ -537,14 +599,122 @@ export class Session {
   private async capture(): Promise<Snap> {
     let model: PageModel;
     try {
-      model = await this.page.evaluate<PageModel>(EXTRACT);
+      model = await this.extract();
     } catch {
       // A navigation raced the snapshot; wait for it and try once more.
       await this.page.settle();
-      model = await this.page.evaluate<PageModel>(EXTRACT);
+      model = await this.extract();
     }
     const r = renderParts(model);
     return { doc: model.doc, url: model.url, title: model.title, ...r };
+  }
+
+  /**
+   * The page model, with the content of cross-origin frames (which the
+   * page's own extraction can't reach) read separately and put in place of
+   * their placeholders, and every ref given its page-wide number.
+   */
+  private async extract(): Promise<PageModel> {
+    for (let attempt = 0; ; attempt++) {
+      await this.page.markFrames(null).catch(() => {});
+      const model = await this.page.evaluate<PageModel>(EXTRACT);
+      if (this.refs?.doc !== model.doc) this.refs = { doc: model.doc, map: new RefMap() };
+      const map = this.refs.map;
+      const frames = renumber(model.root, (ref) => map.global(TOP, ref), 0, 0);
+      for (const node of frames) model.refs += await this.readFrame(node, map, 1);
+      // A frame that appeared a moment ago may not be marked or loaded yet: look again.
+      if (attempt >= 2 || !this.page.framesSettling || !hasPlaceholder(model.root)) return model;
+      await sleep(400);
+    }
+  }
+
+  /** Read a frame's content into its placeholder; returns how many refs it has. */
+  private async readFrame(node: El, map: RefMap, depth: number): Promise<number> {
+    const frameId = node.frame!;
+    if (depth > 4) return 0;
+    let child: PageModel | null = null;
+    try {
+      // A cross-origin frame showing about:blank hasn't loaded its page yet.
+      for (let attempt = 0; attempt < 5; attempt++) {
+        await this.page.markFrames(frameId).catch(() => {});
+        const read = this.page.evaluateIn<PageModel>(frameId, EXTRACT);
+        child = await Promise.race([read, sleep(4000).then(() => Promise.reject(new Error('timed out')))]);
+        if (child?.root && child.url !== 'about:blank') break;
+        await sleep(250);
+      }
+    } catch {
+      return 0; // still loading, or gone: the placeholder stays
+    }
+    if (!child?.root || child.url === 'about:blank') return 0;
+    const key = `${frameId}${KEY_SEP}${child.doc}`;
+    // Its rects are in its own page's pixels; place them where the frame sits.
+    const [x, y] = node.r ?? [0, 0];
+    const frames = renumber(child.root, (ref) => map.global(key, ref), x, y - child.sy);
+    let refs = child.refs;
+    for (const inner of frames) refs += await this.readFrame(inner, map, depth + 1);
+    const name = node.n;
+    delete node.n;
+    delete node.frame;
+    Object.assign(node, { tag: 'div', d: 'b', lm: 'iframe', lmn: name, c: child.root.c ?? [] });
+    return refs;
+  }
+
+  /** Where a ref's element lives: a frame (null for the page itself) and its number there. */
+  private target(ref: number): { frame: string | null; local: number } {
+    const at = this.refs?.map.resolve(ref);
+    if (!at || at.key === TOP) return { frame: null, local: at?.local ?? ref };
+    return { frame: at.key.slice(0, at.key.lastIndexOf(KEY_SEP)), local: at.local };
+  }
+
+  /** Call a page action on a ref, in the frame its element is in. */
+  private callRef<T>(method: string, ref: number, ...args: unknown[]): Promise<T> {
+    const { frame, local } = this.target(ref);
+    const expression = `(${ACTIONS}).${method}(${[local, ...args].map((a) => JSON.stringify(a)).join(', ')})`;
+    return this.page.evaluateIn<T>(frame, expression);
+  }
+
+  /** Bring a frame (and any frames around it) into view, outermost first. */
+  private async revealFrame(frame: string | null) {
+    if (!frame) return;
+    for (const f of this.page.frameChain(frame)) {
+      const box = await this.page.evaluateIn<{ error?: string }>(this.page.parentOf(f), `(${ACTIONS}).frameBox(${JSON.stringify(f)}, true)`);
+      if (box.error) throw new Error(box.error);
+    }
+  }
+
+  /**
+   * A point where a click lands on the ref's element, in the page's viewport.
+   * In a frame: scroll the frame into view, find the point inside it, and add
+   * where each enclosing frame's content starts.
+   */
+  private async locate(ref: number): Promise<{ x: number; y: number }> {
+    const { frame } = this.target(ref);
+    await this.revealFrame(frame);
+    let at = await this.callRef<{ x: number; y: number; error?: string }>('locate', ref);
+    if (at.error) throw new Error(at.error);
+    if (frame) {
+      // The browser places a frame's content where it was when it last drew;
+      // after scrolling, let it draw before measuring (or a click lands where
+      // the frame used to be).
+      const drawn = 'new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))';
+      await Promise.all([null, ...this.page.frameChain(frame)].map((f) => this.page.evaluateIn(f, drawn).catch(() => {})));
+      await sleep(50);
+      at = await this.callRef<{ x: number; y: number; error?: string }>('locate', ref);
+      if (at.error) throw new Error(at.error);
+    }
+    let { x, y } = at;
+    if (frame) {
+      for (const f of this.page.frameChain(frame).reverse()) {
+        const box = await this.page.evaluateIn<{ x: number; y: number; error?: string }>(
+          this.page.parentOf(f),
+          `(${ACTIONS}).frameBox(${JSON.stringify(f)}, false)`,
+        );
+        if (box.error) throw new Error(box.error);
+        x += box.x;
+        y += box.y;
+      }
+    }
+    return { x, y };
   }
 
   /** Refs only mean something against the document they came from. */

@@ -34,6 +34,7 @@ export interface El {
   cap?: string;
   alt?: string;
   kind?: string;
+  frame?: string; // a cross-origin iframe's frame id, until the session reads its content in (session.ts)
   fg?: string; // text color, background, border (a card), bold: how it looks
   bg?: string;
   bd?: string;

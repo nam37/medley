@@ -186,7 +186,8 @@ with a shell can also just call the CLI.
 | `[9 clickable …]` | outermost pointer-cursor element that isn't a real control (script-driven click target) |
 | `── nav "Primary" ──` | landmark: header, nav, main, aside, footer, search, form, dialog; `header › nav` when nested |
 | `#`, `-`, `1.`, `\|` tables, fences, `>` | headings, lists, data tables, `<pre>`, blockquotes |
-| `[img "alt"]`, `[iframe "title"]`, `[video]` | non-text content (unlabelled images are dropped) |
+| `[img "alt"]`, `[iframe "title"]`, `[video]` | non-text content (unlabelled images are dropped; an iframe shows as a placeholder only when its content can't be read) |
+| `── iframe "Checkout" ──` | the content of an embedded frame from another site, read in where the frame is; its refs work like any other |
 
 Blocks that sit side by side on the page share a line. Hidden content is
 dropped, label text is folded into its control's name, and passwords are masked.
@@ -242,6 +243,15 @@ After an action you get one of:
   dialog would, and the page gets its usual `change` event. Paths are resolved
   by the client (the CLI, the terminal UI or the MCP server) against its own
   directory. A snapshot shows the chosen files' names as the field's value.
+- **Frames from other sites** (a sign-in or payment form, a comment widget, a
+  cookie banner) run in their own process, which the page's scripts can't
+  reach. The session attaches to each one, reads it in medley's own isolated
+  world there, and puts its content where the frame is, under an
+  `── iframe "…" ──` divider, nested frames included. Every ref gets one
+  number for the whole page (a page without such frames keeps its own
+  numbering exactly). A click in a frame scrolls each enclosing frame into
+  view, waits for the browser to draw, and adds up where each frame's content
+  starts; typing clicks the field first, since keys go to the focused frame.
 - **Extraction** (`src/extract.js`) runs inside the page and walks what's
   rendered, including open shadow roots and same-origin iframes.
   **Rendering** (`src/render.ts`) turns that into text. **Diffs**
@@ -263,13 +273,19 @@ agent acting in the same session, reload, a file prompt, the working badge,
 a masked password prompt, a download, find, a command, a mouse click, back, a
 `confirm()`, a page that moves on by itself, and the help overlay. It prints
 each frame as it goes.
+`bun run test:frames` serves a page on 127.0.0.1 that embeds a form from
+localhost (another site, so its own process), which embeds a widget from
+127.0.0.1 again, and checks reading, typing, a checkbox, a select and clicks
+in each, a frame below the fold, and that refs stay put.
 `bun scripts/site-shots.ts <dir> [--as <url>]` drives the terminal UI through
 the demo shop in `docs/demo/` and saves its frames as HTML; the website's
 terminal pictures come from it.
 
 ## Known gaps
 
-- Cross-origin iframes render as placeholders and can't be acted on.
+- A frame from another site inside a same-origin frame stays a placeholder
+  (frames directly in the page, or inside other cross-site frames, are read).
+  Advanced grid doesn't draw pictures inside frames from other sites.
 - There's no drag and drop.
 - Canvas and WebGL apps don't render.
 - Some sites block headless Chrome; `--headed` may help.
@@ -283,4 +299,4 @@ terminal pictures come from it.
 ## Next
 
 - Images in the terminal UI via the kitty or sixel graphics protocols.
-- Acting inside cross-origin iframes.
+- Drag and drop.

@@ -16,7 +16,8 @@
   "scripts": {
     "tui": "bun src/cli.ts tui",
     "snapshot": "bun src/cli.ts snapshot",
-    "test:tui": "bun test/tui-smoke.ts"
+    "test:tui": "bun test/tui-smoke.ts",
+    "test:frames": "bun test/frames.ts"
   },
   "dependencies": {
     "@opentui/core": "^0.5.12"

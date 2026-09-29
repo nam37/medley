@@ -120,6 +120,12 @@ const DOM_QUIET = (quiet: number, max: number) => `new Promise((resolve) => {
   else start();
 })`;
 
+/** A frame of the page, and the CDP session that owns its document. */
+interface Frame {
+  session: string;
+  parentId: string | null;
+}
+
 export class Page {
   private inflight = new Set<string>();
   private loading = false; // the main frame is loading a new document
@@ -129,6 +135,20 @@ export class Page {
   // forge the ref table, and its changes to built-ins can't break them. Each
   // new document needs a new world.
   private world: number | null = null;
+  // Every frame, and medley's world in each child frame it has looked into.
+  // Cross-site frames run in their own process, reached through their own
+  // session (auto-attached); others belong to the page's session.
+  private frames = new Map<string, Frame>();
+  private worlds = new Map<string, number>();
+  private childSessions = new Set<string>();
+  private targets = new Map<string, string>(); // cross-site frame id → the session of its own process
+  private attaching = new Set<Promise<void>>(); // cross-site frames still being set up
+  private framesChangedAt = 0;
+
+  /** Whether frames are still appearing (attaching, or added or navigated in the last moment). */
+  get framesSettling(): boolean {
+    return this.attaching.size > 0 || Date.now() - this.framesChangedAt < 2000;
+  }
   onDialog: ((d: Dialog) => void) | null = null;
   onNavigated: (() => void) | null = null; // the main frame got a new document
   closed = false; // the tab went away; waiting on it is pointless
@@ -164,15 +184,23 @@ export class Page {
           if (!p.frame.parentId) {
             this.mainFrameId = p.frame.id;
             this.world = null; // a new document
+            this.frames.set(p.frame.id, { session: this.sessionId, parentId: null });
             this.onNavigated?.();
           }
           break;
+      }
+    });
+    this.cdp.on((m) => {
+      if (m.method && m.sessionId && (m.sessionId === this.sessionId || this.childSessions.has(m.sessionId))) {
+        this.frameEvent(m.sessionId, m.method, m.params);
       }
     });
     await this.send('Page.enable');
     await this.send('Network.enable');
     const { frameTree } = await this.send('Page.getFrameTree');
     this.mainFrameId = frameTree.frame.id;
+    this.addFrameTree(this.sessionId, frameTree, null);
+    await this.watchFrames(this.sessionId);
     await this.send('Emulation.setDeviceMetricsOverride', {
       width: this.width,
       height: this.height,
@@ -183,6 +211,158 @@ export class Page {
 
   send(method: string, params: object = {}): Promise<any> {
     return this.cdp.send(method, params, this.sessionId);
+  }
+
+  // ---- frames ---------------------------------------------------------------
+
+  /** Attach to cross-site frames as they appear under this session (they run in their own process). */
+  private async watchFrames(session: string) {
+    await this.cdp
+      .send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true, filter: [{ type: 'iframe' }, { exclude: true }] }, session)
+      .catch(() => {});
+  }
+
+  private addFrameTree(session: string, tree: { frame: { id: string; parentId?: string }; childFrames?: any[] }, parentId: string | null) {
+    this.setFrame(tree.frame.id, session, parentId);
+    for (const child of tree.childFrames ?? []) this.addFrameTree(session, child, tree.frame.id);
+  }
+
+  /** Record a frame; a parent learned once is kept (events arrive in no fixed order across sessions). */
+  private setFrame(id: string, session: string, parentId: string | null | undefined) {
+    const known = this.frames.get(id);
+    this.frames.set(id, { session, parentId: parentId ?? known?.parentId ?? null });
+  }
+
+  private frameEvent(session: string, method: string, p: any) {
+    if (method === 'Page.frameAttached' || method === 'Target.attachedToTarget' || (method === 'Page.frameNavigated' && p.frame.parentId)) {
+      this.framesChangedAt = Date.now();
+    }
+    switch (method) {
+      case 'Page.frameAttached':
+        this.setFrame(p.frameId, this.frames.get(p.frameId)?.session ?? session, p.parentFrameId);
+        break;
+      case 'Page.frameNavigated':
+        this.worlds.delete(p.frame.id); // a new document, so a new world
+        if (p.frame.parentId) this.setFrame(p.frame.id, session, p.frame.parentId);
+        break;
+      case 'Page.frameDetached':
+        if (p.reason !== 'swap') {
+          this.frames.delete(p.frameId);
+          this.worlds.delete(p.frameId);
+        }
+        break;
+      case 'Target.attachedToTarget': {
+        if (p.targetInfo.type !== 'iframe') return;
+        // A cross-site frame: its document now lives behind this session. Its id is its target's.
+        const child = p.sessionId as string;
+        const id = p.targetInfo.targetId as string;
+        this.childSessions.add(child);
+        this.targets.set(id, child);
+        // Its parent may not be known yet (it can attach before its parent's frame tree comes in).
+        this.setFrame(id, this.frames.get(id)?.session ?? child, p.targetInfo.parentFrameId);
+        this.worlds.delete(id);
+        const setup = (async () => {
+          await this.cdp.send('Page.enable', {}, child);
+          await this.cdp.send('Network.enable', {}, child); // its requests count toward settling
+          const { frameTree } = await this.cdp.send('Page.getFrameTree', {}, child);
+          this.addFrameTree(child, frameTree, this.frames.get(id)?.parentId ?? null);
+          await this.watchFrames(child);
+        })().catch(() => {});
+        this.attaching.add(setup);
+        void setup.finally(() => this.attaching.delete(setup));
+        break;
+      }
+      case 'Network.requestWillBeSent':
+        if (session !== this.sessionId) this.inflight.add(p.requestId);
+        break;
+      case 'Network.loadingFinished':
+      case 'Network.loadingFailed':
+        if (session !== this.sessionId) this.inflight.delete(p.requestId);
+        break;
+      case 'Target.detachedFromTarget':
+        if (!this.childSessions.delete(p.sessionId)) return;
+        for (const [id, s] of this.targets) {
+          if (s !== p.sessionId) continue;
+          this.targets.delete(id);
+          this.worlds.delete(id);
+        }
+        for (const [id, f] of this.frames) {
+          if (f.session !== p.sessionId || this.targets.has(id)) continue;
+          this.frames.delete(id);
+          this.worlds.delete(id);
+        }
+        break;
+    }
+  }
+
+  /** The session that owns a frame's document: its own if it's a cross-site frame, else its parent's. */
+  private sessionOf(frameId: string): string | undefined {
+    return this.targets.get(frameId) ?? this.frames.get(frameId)?.session;
+  }
+
+  /** The frames between the main frame and `frameId`, outermost first, ending with `frameId`. */
+  frameChain(frameId: string): string[] {
+    const chain: string[] = [];
+    for (let id: string | null = frameId; id && id !== this.mainFrameId; id = this.frames.get(id)?.parentId ?? null) {
+      chain.unshift(id);
+      if (chain.length > 20) break;
+    }
+    return chain;
+  }
+
+  /** The frame `frameId` sits in (null for the main frame). */
+  parentOf(frameId: string): string | null {
+    const parent = this.frames.get(frameId)?.parentId ?? null;
+    return parent === this.mainFrameId ? null : parent;
+  }
+
+  /**
+   * Mark the <iframe> elements of `frameId`'s children in its document (in
+   * medley's world there, so the page can't see or forge the marks), so an
+   * extraction can tell which frame each one shows. Null means the main frame.
+   */
+  async markFrames(frameId: string | null) {
+    // Frames that just appeared may still be attaching; give them a moment.
+    for (let i = 0; i < 3 && this.attaching.size; i++) await Promise.race([Promise.all(this.attaching), sleep(1000)]);
+    const parent = frameId ?? this.mainFrameId;
+    const session = this.sessionOf(parent);
+    if (!session) return;
+    const children = [...this.frames].filter(([, c]) => c.parentId === parent).map(([id]) => id);
+    for (const child of children) {
+      try {
+        const { backendNodeId } = await this.cdp.send('DOM.getFrameOwner', { frameId: child }, session);
+        const contextId = await this.worldFor(frameId);
+        const { object } = await this.cdp.send('DOM.resolveNode', { backendNodeId, executionContextId: contextId }, session);
+        await this.cdp.send(
+          'Runtime.callFunctionOn',
+          {
+            objectId: object.objectId,
+            functionDeclaration:
+              'function (k) { this.__medleyFrame = k; (window.__medleyFrames || (window.__medleyFrames = new Map())).set(k, new WeakRef(this)); }',
+            arguments: [{ value: child }],
+          },
+          session,
+        );
+        await this.cdp.send('Runtime.releaseObject', { objectId: object.objectId }, session).catch(() => {});
+      } catch {
+        // gone already, or not in a document medley reads directly (inside a same-origin frame)
+      }
+    }
+  }
+
+  /** Medley's isolated world in a frame (null: the main frame), made on first use. */
+  private async worldFor(frameId: string | null): Promise<number> {
+    if (!frameId) {
+      this.world ??= (await this.send('Page.createIsolatedWorld', { frameId: this.mainFrameId, worldName: 'medley' })).executionContextId;
+      return this.world!;
+    }
+    const known = this.worlds.get(frameId);
+    if (known !== undefined) return known;
+    const session = this.sessionOf(frameId);
+    if (!session) throw new Error('that frame is no longer on the page; take a new snapshot');
+    const { executionContextId } = await this.cdp.send('Page.createIsolatedWorld', { frameId, worldName: 'medley' }, session);
+    this.worlds.set(frameId, executionContextId);
+    return executionContextId;
   }
 
   on(fn: (method: string, params: any) => void): () => void {
@@ -260,28 +440,35 @@ export class Page {
 
   /** Evaluate in medley's isolated world (see `world`), creating it for this document if needed. */
   async evaluate<T>(expression: string): Promise<T> {
-    return (await this.run(expression, true)).value as T;
+    return (await this.run(expression, true, null)).value as T;
+  }
+
+  /** Evaluate in medley's world in a child frame (null: the main frame). */
+  async evaluateIn<T>(frameId: string | null, expression: string): Promise<T> {
+    return (await this.run(expression, true, frameId)).value as T;
   }
 
   /**
    * Give a file input (the element `expression` evaluates to, in medley's
-   * world) these files, as if they were picked in its file dialog. The page
-   * gets its usual input and change events.
+   * world of `frameId`) these files, as if they were picked in its file
+   * dialog. The page gets its usual input and change events.
    */
-  async setFiles(expression: string, files: string[]) {
-    const { objectId } = await this.run(expression, false);
+  async setFiles(expression: string, files: string[], frameId: string | null = null) {
+    const { objectId } = await this.run(expression, false, frameId);
     if (!objectId) throw new Error('the file field went away');
+    const session = frameId ? (this.sessionOf(frameId) ?? this.sessionId) : this.sessionId;
     try {
-      await this.send('DOM.setFileInputFiles', { objectId, files });
+      await this.cdp.send('DOM.setFileInputFiles', { objectId, files }, session);
     } finally {
-      await this.send('Runtime.releaseObject', { objectId }).catch(() => {});
+      await this.cdp.send('Runtime.releaseObject', { objectId }, session).catch(() => {});
     }
   }
 
-  private async run(expression: string, returnByValue: boolean): Promise<{ value?: unknown; objectId?: string }> {
+  private async run(expression: string, returnByValue: boolean, frameId: string | null): Promise<{ value?: unknown; objectId?: string }> {
     const run = async () => {
-      this.world ??= (await this.send('Page.createIsolatedWorld', { frameId: this.mainFrameId, worldName: 'medley' })).executionContextId;
-      return this.send('Runtime.evaluate', { expression, contextId: this.world, returnByValue, awaitPromise: true });
+      const contextId = await this.worldFor(frameId);
+      const session = frameId ? this.sessionOf(frameId)! : this.sessionId;
+      return this.cdp.send('Runtime.evaluate', { expression, contextId, returnByValue, awaitPromise: true }, session);
     };
     let r;
     try {
@@ -289,7 +476,8 @@ export class Page {
     } catch (e) {
       // The document changed under us (its world went with it); make one in the new document.
       if (!/context/i.test((e as Error).message)) throw e;
-      this.world = null;
+      if (frameId) this.worlds.delete(frameId);
+      else this.world = null;
       r = await run();
     }
     if (r.exceptionDetails) {

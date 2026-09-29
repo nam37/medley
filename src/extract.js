@@ -335,6 +335,9 @@
       if (!vis || r[2] < 50 || r[3] < 50) return null;
       n.tag = 'iframe';
       n.n = cut(clean(el.title || el.getAttribute('aria-label') || el.name || ''), 80) || hostOf(el.src);
+      // Set by medley (in this world only) on the frame's element, so its
+      // content can be read separately and put in here.
+      if (typeof el.__medleyFrame === 'string') n.frame = el.__medleyFrame;
       return n;
     }
 

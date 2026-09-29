@@ -132,6 +132,20 @@
     return { text: match.text.trim() };
   },
 
+  // Where a child frame's content starts, in this document's top-level
+  // viewport; with `scroll`, first bring the frame's element into view.
+  frameBox(key, scroll) {
+    const held = window.__medleyFrames && window.__medleyFrames.get(key);
+    const el = held && held.deref();
+    if (!el || !el.isConnected) return { error: 'that frame is no longer on the page; take a new snapshot' };
+    if (scroll) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    const r = el.getBoundingClientRect();
+    const cs = el.ownerDocument.defaultView.getComputedStyle(el);
+    const x = r.left + el.clientLeft + parseFloat(cs.paddingLeft);
+    const y = r.top + el.clientTop + parseFloat(cs.paddingTop);
+    return this.toTop(el.ownerDocument, x, y);
+  },
+
   // Check that a file field can take `count` files, before they're set on it.
   fileField(ref, count) {
     const el = this.element(ref);

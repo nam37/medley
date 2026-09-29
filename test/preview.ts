@@ -31,7 +31,7 @@ let shot;
 try {
   await session.goto('preview', toUrl(url));
   page = session.view('preview').page!;
-  shot = mode === 'advanced' ? await session.screenshot() : undefined;
+  shot = mode === 'advanced' ? await session.pictures() : undefined;
 } finally {
   await session.close();
 }

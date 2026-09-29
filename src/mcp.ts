@@ -70,6 +70,27 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: 'browser_fill',
+    cmd: 'fill',
+    description:
+      'Fill several fields at once and return what changed: text for text fields, an option (text or value) for selects, "on" or "off" for checkboxes and radio buttons. With submit=true, press Enter afterwards.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        fields: { type: 'array', items: { type: 'object', properties: { ref: REF, value: { type: 'string' } }, required: ['ref', 'value'] } },
+        submit: { type: 'boolean' },
+      },
+      required: ['fields'],
+    },
+  },
+  {
+    name: 'browser_screenshot',
+    cmd: 'screenshot',
+    description:
+      "An image of the page as it looks (the window, or with full=true the whole page), for what text can't show: charts, canvas and WebGL apps, how a layout looks.",
+    inputSchema: { type: 'object', properties: { full: { type: 'boolean' } } },
+  },
+  {
     name: 'browser_select',
     cmd: 'select',
     description: 'Choose an option of a select element by its visible text or value.',
@@ -157,8 +178,9 @@ const TOOLS: Tool[] = [
   {
     name: 'browser_wait',
     cmd: 'wait',
-    description: 'Wait for the page to do something on its own (default 2 seconds, at most 60), then return what changed.',
-    inputSchema: { type: 'object', properties: { seconds: { type: 'number' } } },
+    description:
+      'Wait for the page to do something on its own, then return what changed. With text, wait until that text shows on the page (or with gone=true, until it no longer does), checking every quarter second, for up to `seconds` (default 10; 2 without text; at most 60).',
+    inputSchema: { type: 'object', properties: { text: { type: 'string' }, gone: { type: 'boolean' }, seconds: { type: 'number' } } },
   },
   {
     name: 'browser_dialog',
@@ -202,8 +224,18 @@ export async function serveMcp(sessionName: string, start: StartOptions) {
           const args = { ...(params.arguments ?? {}) };
           if (tool.cmd === 'upload' && Array.isArray(args.files)) args.files = args.files.map((f: unknown) => resolve(String(f)));
           if (tool.name === 'browser_search') args.url = searchUrl(String(args.query ?? ''));
+          if (tool.cmd === 'wait' && args.text !== undefined) args[args.gone ? 'gone' : 'for'] = String(args.text);
           const command = { cmd: tool.cmd, args, client };
           const text = await send(sessionName, command, tool.cmd === 'goto' ? start : undefined);
+          if (tool.cmd === 'screenshot') {
+            const shot = JSON.parse(text) as { png: string; width: number; height: number; url: string };
+            return {
+              content: [
+                { type: 'image', data: shot.png, mimeType: 'image/png' },
+                { type: 'text', text: `${shot.url} · ${shot.width}×${shot.height}` },
+              ],
+            };
+          }
           return { content: [{ type: 'text', text }] };
         } catch (e) {
           const message = (e as Error).message.startsWith('no browser session')

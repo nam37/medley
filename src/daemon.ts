@@ -107,7 +107,7 @@ function announce(event: SessionEvent) {
 
 // Each command, with how long it took and where the time went, goes to the
 // session's log (~/.medley/<name>.log), for telling what makes a page slow.
-const QUIET = new Set(['status', 'screenshot', 'events']);
+const QUIET = new Set(['status', 'pictures', 'events']);
 function logTiming({ cmd, args }: Command, client: string, ms: number) {
   const parts = session.takeTiming();
   if (QUIET.has(cmd)) return;
@@ -119,6 +119,7 @@ function summarize({ cmd, args }: Command, text: string): string {
   if (cmd === 'goto') return `opened ${args?.url}`;
   if (cmd === 'snapshot') return 'looked at the page';
   if (cmd === 'screenshot') return 'took a screenshot';
+  if (cmd === 'pictures') return "took the page's pictures";
   if (cmd === 'tabs') return 'listed the tabs';
   if (cmd === 'downloads') return 'listed the downloads';
   if (cmd === 'history' && args?.n === undefined) return 'listed the history';
@@ -129,6 +130,17 @@ function ref(value: unknown): number {
   const n = Number(value);
   if (!Number.isInteger(n) || n < 1) throw new Error(`"${value}" is not a ref; refs are the numbers in a snapshot`);
   return n;
+}
+
+/** Fields to fill: [{ ref, value }], or { "4": "value" }. */
+function fields(value: unknown): { ref: number; value: string }[] {
+  const list = Array.isArray(value)
+    ? value.map((f: any) => ({ ref: ref(f?.ref), value: String(f?.value ?? '') }))
+    : value && typeof value === 'object'
+      ? Object.entries(value as Record<string, unknown>).map(([k, v]) => ({ ref: ref(k), value: String(v ?? '') }))
+      : [];
+  if (!list.length) throw new Error('fill needs at least one field: ref=value');
+  return list;
 }
 
 function entry(value: unknown): number {
@@ -168,6 +180,8 @@ async function dispatch({ cmd, args = {} }: Command, client: string): Promise<st
       return session.click(client, ref(args.ref));
     case 'type':
       return session.type(client, ref(args.ref), String(args.text ?? ''), !!args.submit);
+    case 'fill':
+      return session.fill(client, fields(args.fields), !!args.submit);
     case 'select':
       return session.select(client, ref(args.ref), String(args.option ?? ''));
     case 'press':
@@ -190,13 +204,20 @@ async function dispatch({ cmd, args = {} }: Command, client: string): Promise<st
       return session.history(client, -1);
     case 'forward':
       return session.history(client, 1);
-    case 'wait':
+    case 'wait': {
+      const text = args.for ?? args.gone;
+      if (text !== undefined && text !== '') {
+        return session.waitFor(client, String(text), { gone: args.for === undefined, seconds: Math.min(Number(args.seconds) || 10, 60) });
+      }
       return session.wait(client, Math.min(Number(args.seconds) || 2, 60));
+    }
     case 'dialog':
       if (args.action !== 'accept' && args.action !== 'dismiss') throw new Error('dialog needs accept or dismiss');
       return session.answer(client, args.action === 'accept', args.text === undefined ? undefined : String(args.text));
+    case 'pictures':
+      return JSON.stringify(await session.pictures()); // for the terminal UI's advanced grid
     case 'screenshot':
-      return JSON.stringify(await session.screenshot()); // for the terminal UI's pictures
+      return JSON.stringify(await session.screenshot({ full: !!args.full }));
     case 'downloads':
       return session.downloadList();
     case 'history':

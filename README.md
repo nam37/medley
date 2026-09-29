@@ -142,6 +142,7 @@ medley snapshot --outline           the page's regions and headings, with how ma
 medley snapshot --section <name>     one region or heading and what's under it
 medley click <ref>
 medley type <ref> <text> [--submit] replace a field's text, optionally pressing Enter
+medley fill <ref>=<value>... [--submit]  fill fields at once: text, a select's option, a checkbox on/off
 medley select <ref> <option>        choose a <select> option by text or value
 medley press <key>                  Enter, Escape, Tab, ArrowDown, PageDown, a, Control+a, …
 medley hover <ref>                  move the mouse over an element (menus that open on hover)
@@ -155,6 +156,9 @@ medley tabs                         list open tabs
 medley tab <number>                 switch to a tab
 medley close-tab [number]           close a tab (the current one by default)
 medley wait [seconds]               let the page work, then show what changed
+medley wait --for <text> [seconds]  wait until the text (or the page title) shows, then show what changed
+medley wait --gone <text> [seconds] wait until it doesn't (a "Loading…" going away)
+medley screenshot [file] [--full]   save a PNG of the window, or of the whole page
 medley dialog accept [text] | dismiss
 medley status | stop
 
@@ -202,6 +206,12 @@ The MCP tools (`browser_goto`, `browser_click`, `browser_type`, …) talk to the
 same session as the CLI and the terminal UI. Run `medley tui` while an agent
 browses to watch it live, or `medley snapshot` to take a single look. An agent
 with a shell can also just call the CLI.
+
+A few of them save an agent round trips: `browser_fill` fills a whole form and
+reports once, `browser_wait` with `text` waits for something to show up (or go
+away, with `gone`) instead of guessing how long, `browser_snapshot` with
+`outline` or `section` reads a long page in parts, and `browser_screenshot`
+returns an image of the page for what text can't show.
 
 ## Output format
 
@@ -320,7 +330,8 @@ terminal pictures come from it.
   (frames directly in the page, or inside other cross-site frames, are read).
   Advanced grid doesn't draw pictures inside frames from other sites.
 - There's no drag and drop.
-- Canvas and WebGL apps don't render.
+- Canvas and WebGL apps don't render as text; `screenshot` (MCP
+  `browser_screenshot`, which returns the image) shows them.
 - Some sites block headless Chrome; `--headed` may help.
 - `--headed` hasn't been exercised yet.
 - Advanced grid draws solid background colors and `<img>`, `<video>` and

@@ -61,6 +61,11 @@ export interface View {
   } | null;
 }
 
+/** "a", "a and b", "a, b and c" */
+function joinAnd(items: string[]): string {
+  return items.length < 2 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`;
+}
+
 /** 812 B, 1.2 kB, 3.4 MB */
 function size(bytes: number): string {
   if (bytes < 1000) return `${bytes} B`;
@@ -293,16 +298,87 @@ export class Session {
     await this.checkRefs(client);
     const what = `typed into ${this.label(client, ref)}${submit ? ' and pressed Enter' : ''}`;
     return this.act(client, what, async () => {
-      // Keys go to the focused frame, and a frame gets focus the way a person gives it: a click.
-      if (this.target(ref).frame) {
-        const at = await this.locate(ref);
-        await this.page.click(at.x, at.y);
-      }
-      const r = await this.callRef<{ hasText?: boolean; error?: string }>('focus', ref);
-      if (r.error) throw new Error(r.error);
-      if (text) await this.page.insertText(text);
-      else if (r.hasText) await this.page.press(parseKey('Delete')); // clear the selected text
+      await this.typeInto(ref, text);
       if (submit) await this.page.press(parseKey('Enter'));
+    });
+  }
+
+  /** Replace a field's text the way typing would, so frameworks see ordinary input events. */
+  private async typeInto(ref: number, text: string) {
+    // Keys go to the focused frame, and a frame gets focus the way a person gives it: a click.
+    if (this.target(ref).frame) {
+      const at = await this.locate(ref);
+      await this.page.click(at.x, at.y);
+    }
+    const r = await this.callRef<{ hasText?: boolean; error?: string }>('focus', ref);
+    if (r.error) throw new Error(r.error);
+    if (text) await this.page.insertText(text);
+    else if (r.hasText) await this.page.press(parseKey('Delete')); // clear the selected text
+  }
+
+  /**
+   * Fill several fields in one go, and report the changes once: text fields
+   * are typed into, selects get an option (by text or value), checkboxes and
+   * radio buttons are checked ("on", "yes", "true") or unchecked ("off", "no").
+   */
+  async fill(client: string, fields: { ref: number; value: string }[], submit = false): Promise<string> {
+    await this.checkRefs(client);
+    const names = fields.map((f) => this.label(client, f.ref));
+    const what = `filled ${joinAnd(names)}${submit ? ' and pressed Enter' : ''}`;
+    return this.act(client, what, async () => {
+      for (const { ref, value } of fields) {
+        const label = this.label(client, ref);
+        const kind = /^\[\d+ (\w+)/.exec(label)?.[1] ?? 'link';
+        if (kind === 'select') {
+          const r = await this.callRef<{ error?: string }>('select', ref, value);
+          if (r.error) throw new Error(r.error);
+        } else if (kind === 'checkbox' || kind === 'radio') {
+          const want = !/^(off|no|false|0|unchecked)?$/i.test(value.trim());
+          const r = await this.callRef<{ checked?: boolean; error?: string }>('checked', ref);
+          if (r.error) throw new Error(r.error);
+          if (r.checked === want) continue;
+          if (kind === 'radio' && !want) throw new Error(`${label} is unchecked by checking another radio button`);
+          const at = await this.locate(ref);
+          await this.page.click(at.x, at.y);
+        } else if (kind === 'textbox' || kind === 'password' || kind === 'combobox') {
+          await this.typeInto(ref, value);
+        } else {
+          throw new Error(`${label} isn't a field to fill; click it instead`);
+        }
+      }
+      if (submit) await this.page.press(parseKey('Enter'));
+    });
+  }
+
+  /**
+   * Wait (up to `seconds`) until `text` shows on the page, or with `gone`,
+   * until it doesn't, checking every quarter second; then report the changes.
+   * Not finding it isn't an error: the result says so, with what changed.
+   */
+  waitFor(client: string, text: string, { gone = false, seconds = 10 } = {}): Promise<string> {
+    // The page's title counts too: waiting for the next page is often waiting for its title.
+    const probe = `(() => (document.title + '\\n' + ((document.body && document.body.innerText) || '')).toLowerCase().includes(${JSON.stringify(text.toLowerCase())}))()`;
+    let what = '';
+    return this.act(client, () => what, async () => {
+      const start = Date.now();
+      for (;;) {
+        let present = false;
+        try {
+          present = await this.page.evaluate<boolean>(probe);
+        } catch {
+          // the page is between documents; look again
+        }
+        const took = ((Date.now() - start) / 1000).toFixed(1);
+        if (present !== gone) {
+          what = gone ? `"${text}" went away after ${took}s` : `"${text}" appeared after ${took}s`;
+          return;
+        }
+        if (Date.now() - start >= seconds * 1000) {
+          what = gone ? `"${text}" was still there after ${seconds}s` : `"${text}" didn't appear within ${seconds}s`;
+          return;
+        }
+        await sleep(250);
+      }
     });
   }
 
@@ -422,7 +498,7 @@ export class Session {
    * but the pictures is hidden while it's taken, so text laid over an image
    * (a hero banner) comes out as text, not as pixels of text.
    */
-  async screenshot(): Promise<Screenshot> {
+  async pictures(): Promise<Screenshot> {
     if (this.dialog) throw new Error(this.dialogText());
     await this.ensureTab();
     const { cssContentSize } = await this.page.send('Page.getLayoutMetrics');
@@ -447,6 +523,28 @@ export class Session {
     } finally {
       await this.page.evaluate(`document.getElementById('__medley_pictures')?.remove()`);
     }
+  }
+
+  /**
+   * A PNG of the page as it looks: what's in the window, or with `full` the
+   * whole page (up to 16,000 pixels tall). For what text can't show: charts,
+   * canvas apps, how a layout looks.
+   */
+  async screenshot({ full = false } = {}): Promise<{ png: string; width: number; height: number; url: string }> {
+    if (this.dialog) throw new Error(this.dialogText());
+    await this.ensureTab();
+    let width = this.page.width;
+    let height = this.page.height;
+    let options = {};
+    if (full) {
+      const { cssContentSize } = await this.page.send('Page.getLayoutMetrics');
+      width = Math.ceil(cssContentSize.width);
+      height = Math.min(Math.ceil(cssContentSize.height), 16000);
+      options = { captureBeyondViewport: true, clip: { x: 0, y: 0, width, height, scale: 1 } };
+    }
+    const shot = await this.page.send('Page.captureScreenshot', { format: 'png', ...options });
+    const url = await this.page.evaluate<string>('location.href').catch(() => '');
+    return { png: shot.data, width, height, url };
   }
 
   async hover(client: string, ref: number): Promise<string> {

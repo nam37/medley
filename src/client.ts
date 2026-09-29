@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sleep } from './browser.ts';
 import type { View } from './session.ts';
@@ -242,4 +242,15 @@ async function startDaemon(name: string, opts: StartOptions): Promise<SessionInf
     await sleep(25); // the browser takes a second or two; don't add to it
   }
   throw new Error(`timed out starting the session; see ${logFile(name)}`);
+}
+
+/**
+ * Save a `screenshot` reply's PNG, to `path` or a timestamped name in the
+ * current directory; returns what to tell the user.
+ */
+export function saveScreenshot(reply: string, path?: string): string {
+  const shot = JSON.parse(reply) as { png: string; width: number; height: number; url: string };
+  const file = resolve(path || `screenshot-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.png`);
+  writeFileSync(file, Buffer.from(shot.png, 'base64'));
+  return `saved a ${shot.width}×${shot.height} screenshot of ${shot.url || 'the page'} to ${file}`;
 }

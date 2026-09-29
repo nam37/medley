@@ -146,6 +146,14 @@
     return this.toTop(el.ownerDocument, x, y);
   },
 
+  // Whether a checkbox or radio button (native or ARIA) is checked.
+  checked(ref) {
+    const el = this.element(ref);
+    if (!el) return this.missing(ref);
+    if (el.localName === 'input') return { checked: el.checked };
+    return { checked: el.getAttribute('aria-checked') === 'true' };
+  },
+
   // Check that a file field can take `count` files, before they're set on it.
   fileField(ref, count) {
     const el = this.element(ref);

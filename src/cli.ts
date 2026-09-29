@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { send, STALE_HINT } from './client.ts';
+import { saveScreenshot, send, STALE_HINT } from './client.ts';
 import { colorize } from './color.ts';
 import { parseCommand, toUrl, UsageError } from './commands.ts';
 import { serveMcp } from './mcp.ts';
@@ -34,6 +34,10 @@ session commands:
   tab <number>                    switch to a tab
   close-tab [number]              close a tab (the current one by default)
   wait [seconds]                  let the page work, then show what changed (default 2)
+  wait --for <text> [seconds]     wait until the text shows (default up to 10s), then show what changed
+  wait --gone <text> [seconds]    wait until it doesn't (a "Loading…" going away)
+  fill <ref>=<value>... [--submit]  fill fields at once: text, a select's option, a checkbox on/off
+  screenshot [file] [--full]      save a PNG of the window (--full: the whole page)
   dialog accept [text]            answer a confirm() or prompt() the page opened
   dialog dismiss
   status, stop
@@ -78,6 +82,9 @@ const opts = {
   hard: false,
   outline: false,
   section: undefined as string | undefined,
+  for: undefined as string | undefined,
+  gone: undefined as string | undefined,
+  full: false,
   json: false,
   color:!!process.stdout.isTTY && !process.env.NO_COLOR,
   width: undefined as number | undefined,
@@ -98,6 +105,9 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--hard') opts.hard = true;
   else if (a === '--outline') opts.outline = true;
   else if (a === '--section') opts.section = value();
+  else if (a === '--for') opts.for = value();
+  else if (a === '--gone') opts.gone = value();
+  else if (a === '--full') opts.full = true;
   else if (a === '--json') opts.json = true;
   else if (a === '--color') opts.color = true;
   else if (a === '--no-color') opts.color = false;
@@ -140,6 +150,7 @@ async function run(): Promise<string> {
   if (command === 'snapshot' && rest[0]) return oneShot(rest[0]);
   const { cmd, args, start: starts } = parseCommand(words, opts);
   const reply = send(opts.session, { cmd, args, client }, starts ? start : undefined);
+  if (cmd === 'screenshot') return saveScreenshot(await reply, args.path as string | undefined);
   if (cmd !== 'stop') return reply;
   return reply.catch((e: Error) => (e.message.startsWith('no browser session') ? 'no session was running' : Promise.reject(e)));
 }

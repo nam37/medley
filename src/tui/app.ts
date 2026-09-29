@@ -13,7 +13,7 @@ import {
   type KeyEvent,
   type PasteEvent,
 } from '@opentui/core';
-import { STALE_HINT, type Reply, type SessionEvent } from '../client.ts';
+import { saveScreenshot, STALE_HINT, type Reply, type SessionEvent } from '../client.ts';
 import { resolve } from 'node:path';
 import { addBookmark, readBookmarks, removeBookmark } from '../bookmarks.ts';
 import { looksLikeAddress, parseCommand, searchUrl, splitFlags, splitWords, toUrl } from '../commands.ts';
@@ -297,7 +297,7 @@ export class App {
     this.drawStatus();
     try {
       const reply = await this.backend.request(cmd, args, opts.start);
-      this.apply(cmd, reply, opts.quiet);
+      this.apply(cmd, reply, opts.quiet, args);
       return true;
     } catch (e) {
       const text = (e as Error).message;
@@ -324,9 +324,10 @@ export class App {
     }
   }
 
-  private apply(cmd: string, reply: Reply, quiet = false) {
+  private apply(cmd: string, reply: Reply, quiet = false, args: Record<string, unknown> = {}) {
     if (reply.state) this.show(reply.state);
     if (quiet) return;
+    if (cmd === 'screenshot') return this.say(saveScreenshot(reply.text, args.path as string | undefined), 'ok');
     const lines = reply.text.split('\n');
     const notes = lines.filter((l) => l.startsWith('note: ')).map((l) => l.slice(6));
     let summary = cmd === 'goto' ? '' : cmd === 'snapshot' ? 'refreshed' : lines[0];
@@ -358,7 +359,7 @@ export class App {
   }
 
   private onEvent(e: SessionEvent) {
-    if (e.client === this.backend.client || ['snapshot', 'status', 'screenshot', 'tabs'].includes(e.cmd)) return;
+    if (e.client === this.backend.client || ['snapshot', 'status', 'screenshot', 'pictures', 'tabs'].includes(e.cmd)) return;
     if (e.summary.startsWith('listed the ')) return; // history, downloads: nothing on the page changed
     const who = e.client.startsWith('mcp') ? 'agent' : e.client;
     this.activity = e.client === 'page' ? e.summary : `${who}: ${e.summary}`;
@@ -876,7 +877,7 @@ export class App {
     if (!this.current?.visual?.images.length) return;
     this.picturesFor = doc;
     try {
-      const reply = await this.backend.request('screenshot');
+      const reply = await this.backend.request('pictures');
       const shot = JSON.parse(reply.text) as Screenshot;
       if (this.current?.doc !== doc) return; // moved on meanwhile
       const image = NativeImage.decode(Buffer.from(shot.jpeg, 'base64'));

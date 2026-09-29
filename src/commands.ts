@@ -16,9 +16,12 @@ export interface CommandFlags {
   hard?: boolean;
   outline?: boolean;
   section?: string;
+  for?: string; // wait --for <text>
+  gone?: string; // wait --gone <text>
+  full?: boolean; // screenshot --full
 }
 
-const FLAGS = new Set(['--links', '--diff', '--submit', '--hard', '--outline']);
+const FLAGS = new Set(['--links', '--diff', '--submit', '--hard', '--outline', '--full']);
 
 export class UsageError extends Error {}
 
@@ -115,7 +118,18 @@ export function parseCommand([command, ...rest]: string[], flags: CommandFlags =
     case 'stop':
       return { cmd: command, args: {} };
     case 'wait':
-      return { cmd: 'wait', args: { seconds: rest[0] ?? 2 } };
+      return { cmd: 'wait', args: { seconds: rest[0], for: flags.for, gone: flags.gone } };
+    case 'fill': {
+      need(1, 'fill <ref>=<value>... [--submit]');
+      const fields = rest.map((w) => {
+        const at = w.indexOf('=');
+        if (at < 1) throw new UsageError(`"${w}" isn't ref=value; usage: fill <ref>=<value>... [--submit]`);
+        return { ref: w.slice(0, at), value: w.slice(at + 1) };
+      });
+      return { cmd: 'fill', args: { fields, submit: flags.submit } };
+    }
+    case 'screenshot':
+      return { cmd: 'screenshot', args: { full: flags.full, path: rest[0] } };
     case 'dialog':
       if (rest[0] !== 'accept' && rest[0] !== 'dismiss') throw new UsageError('usage: dialog accept [text] | dialog dismiss');
       return { cmd: 'dialog', args: { action: rest[0], text: rest.length > 1 ? rest.slice(1).join(' ') : undefined } };

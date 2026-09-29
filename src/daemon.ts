@@ -222,8 +222,12 @@ async function dispatch({ cmd, args = {} }: Command, client: string): Promise<st
     case 'dialog':
       if (args.action !== 'accept' && args.action !== 'dismiss') throw new Error('dialog needs accept or dismiss');
       return session.answer(client, args.action === 'accept', args.text === undefined ? undefined : String(args.text));
-    case 'pictures':
-      return JSON.stringify(await session.pictures()); // for the terminal UI's advanced grid
+    case 'pictures': {
+      // For the terminal UI's advanced grid, which asks for full size when the terminal draws real pixels.
+      const scale = typeof args.scale === 'number' && args.scale > 0 && args.scale <= 2 ? args.scale : undefined;
+      const quality = typeof args.quality === 'number' && args.quality >= 1 && args.quality <= 100 ? Math.round(args.quality) : undefined;
+      return JSON.stringify(await session.pictures({ scale, quality }));
+    }
     case 'screenshot':
       return JSON.stringify(await session.screenshot({ full: !!args.full }));
     case 'downloads':

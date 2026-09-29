@@ -37,7 +37,7 @@ interface Snap {
 
 /** A JPEG of the whole page, scaled down; `width` and `height` are in page pixels. */
 export interface Screenshot {
-  jpeg: string; // base64
+  image: string; // base64 of a JPEG, or of a PNG when asked for
   width: number;
   height: number;
   scale: number;
@@ -539,17 +539,31 @@ export class Session {
   }
 
   /**
-   * The page's pictures as one half-scale JPEG, for the terminal UI. Everything
-   * but the pictures is hidden while it's taken, so text laid over an image
-   * (a hero banner) comes out as text, not as pixels of text.
+   * The page's pictures as one image, for the terminal UI: a half-scale JPEG
+   * (quality 70), or as asked. Everything but the pictures is hidden while it's taken, so
+   * text laid over an image (a hero banner) comes out as text, not as pixels
+   * of text, and a dialog over a picture doesn't cover it.
    */
-  async pictures(): Promise<Screenshot> {
+  async pictures({ scale = 0.5, png = false, quality = 70 } = {}): Promise<Screenshot> {
     if (this.dialog) throw new Error(this.dialogText());
     await this.ensureTab();
+    // Pictures the browser loads only when scrolled near (loading="lazy", most
+    // of a news page's) would come out as empty boxes: load them now, waiting
+    // up to 4 seconds.
+    await this.page.evaluate(`(async () => {
+      const waits = [];
+      for (const img of document.images) {
+        if (img.loading === 'lazy') img.loading = 'eager';
+        if (!img.complete) waits.push(new Promise((done) => {
+          img.addEventListener('load', done, { once: true });
+          img.addEventListener('error', done, { once: true });
+        }));
+      }
+      await Promise.race([Promise.all(waits), new Promise((done) => setTimeout(done, 4000))]);
+    })()`).catch(() => {});
     const { cssContentSize } = await this.page.send('Page.getLayoutMetrics');
     const width = Math.ceil(cssContentSize.width);
     const height = Math.min(Math.ceil(cssContentSize.height), 16000);
-    const scale = 0.5;
     await this.page.evaluate(`(() => {
       const s = document.createElement('style');
       s.id = '__medley_pictures';
@@ -559,12 +573,11 @@ export class Session {
     })()`);
     try {
       const shot = await this.page.send('Page.captureScreenshot', {
-        format: 'jpeg',
-        quality: 70,
+        ...(png ? { format: 'png' } : { format: 'jpeg', quality }),
         captureBeyondViewport: true,
         clip: { x: 0, y: 0, width, height, scale },
       });
-      return { jpeg: shot.data, width, height, scale };
+      return { image: shot.data, width, height, scale };
     } finally {
       await this.page.evaluate(`document.getElementById('__medley_pictures')?.remove()`);
     }
@@ -907,48 +920,66 @@ export class Session {
    * their placeholders, and every ref given its page-wide number.
    */
   private async extract(): Promise<PageModel> {
+    const started = Date.now();
     for (let attempt = 0; ; attempt++) {
       await this.page.markFrames(null).catch(() => {});
       const model = await this.page.evaluate<PageModel>(EXTRACT);
       if (this.refs?.doc !== model.doc) this.refs = { doc: model.doc, map: new RefMap() };
       const map = this.refs.map;
       const frames = renumber(model.root, (ref) => map.global(TOP, ref), 0, 0);
-      for (const node of frames) model.refs += await this.readFrame(node, map, 1);
-      // A frame that appeared a moment ago may not be marked or loaded yet: look again.
-      if (attempt >= 2 || !this.page.framesSettling || !hasPlaceholder(model.root)) return model;
+      model.refs += await this.readFrames(frames, map, 1);
+      // A frame that appeared a moment ago may not be marked or loaded yet: look
+      // again, for a little while (a page with ads keeps adding frames).
+      const settled = !this.page.framesSettling || !hasPlaceholder(model.root);
+      if (attempt >= 2 || settled || Date.now() - started > 3000) return model;
       await sleep(400);
     }
   }
 
-  /** Read a frame's content into its placeholder; returns how many refs it has. */
-  private async readFrame(node: El, map: RefMap, depth: number): Promise<number> {
-    const frameId = node.frame!;
-    if (depth > 4) return 0;
-    let child: PageModel | null = null;
-    try {
-      // A cross-origin frame showing about:blank hasn't loaded its page yet.
-      for (let attempt = 0; attempt < 5; attempt++) {
+  /**
+   * Read frames' content into their placeholders, all at once, then number
+   * their refs in page order (so the numbers don't depend on which frame
+   * answered first). Returns how many refs they have.
+   */
+  private async readFrames(nodes: El[], map: RefMap, depth: number): Promise<number> {
+    if (depth > 4 || !nodes.length) return 0;
+    const children = await Promise.all(nodes.map((node) => this.frameModel(node.frame!)));
+    let refs = 0;
+    for (const [i, node] of nodes.entries()) {
+      const child = children[i];
+      if (!child) continue; // still loading, or gone: the placeholder stays
+      const key = `${node.frame}${KEY_SEP}${child.doc}`;
+      // Its rects are in its own page's pixels; place them where the frame sits.
+      const [x, y] = node.r ?? [0, 0];
+      const inner = renumber(child.root, (ref) => map.global(key, ref), x, y - child.sy);
+      refs += child.refs + (await this.readFrames(inner, map, depth + 1));
+      const name = node.n;
+      delete node.n;
+      delete node.frame;
+      Object.assign(node, { tag: 'div', d: 'b', lm: 'iframe', lmn: name, c: child.root!.c ?? [] });
+    }
+    return refs;
+  }
+
+  /**
+   * A frame's page model, once it has its page (a cross-origin frame shows
+   * about:blank until then). Null if it hasn't within 3 seconds, or is gone.
+   */
+  private async frameModel(frameId: string): Promise<PageModel | null> {
+    const deadline = Date.now() + 3000;
+    for (let attempt = 0; attempt < 5 && Date.now() < deadline; attempt++) {
+      try {
         await this.page.markFrames(frameId).catch(() => {});
         const read = this.page.evaluateIn<PageModel>(frameId, EXTRACT);
-        child = await Promise.race([read, sleep(4000).then(() => Promise.reject(new Error('timed out')))]);
-        if (child?.root && child.url !== 'about:blank') break;
-        await sleep(250);
+        read.catch(() => {}); // it may answer after the deadline, or fail
+        const child = await Promise.race([read, sleep(Math.max(0, deadline - Date.now())).then(() => null)]);
+        if (child?.root && child.url !== 'about:blank') return child;
+      } catch {
+        return null;
       }
-    } catch {
-      return 0; // still loading, or gone: the placeholder stays
+      await sleep(250);
     }
-    if (!child?.root || child.url === 'about:blank') return 0;
-    const key = `${frameId}${KEY_SEP}${child.doc}`;
-    // Its rects are in its own page's pixels; place them where the frame sits.
-    const [x, y] = node.r ?? [0, 0];
-    const frames = renumber(child.root, (ref) => map.global(key, ref), x, y - child.sy);
-    let refs = child.refs;
-    for (const inner of frames) refs += await this.readFrame(inner, map, depth + 1);
-    const name = node.n;
-    delete node.n;
-    delete node.frame;
-    Object.assign(node, { tag: 'div', d: 'b', lm: 'iframe', lmn: name, c: child.root.c ?? [] });
-    return refs;
+    return null;
   }
 
   /** Where a ref's element lives: a frame (null for the page itself) and its number there. */

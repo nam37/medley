@@ -278,8 +278,8 @@
     return s.replace(/\t/g, '    ');
   }
 
-  // Some pages mark a modal's wrapper aria-hidden by mistake (cnn.com's consent
-  // dialog). The modal still covers the page and has to be answered, so keep it.
+  // Some pages mark a modal's wrapper aria-hidden by mistake (a consent dialog,
+  // say). The modal still covers the page and has to be answered, so keep it.
   const DIALOG = 'dialog[open], [role=dialog], [role=alertdialog], [aria-modal=true]';
   function holdsDialog(el) {
     for (const d of el.querySelectorAll(DIALOG)) {

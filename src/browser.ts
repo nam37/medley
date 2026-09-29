@@ -138,7 +138,7 @@ interface Frame {
 
 export class Page {
   private inflight = new Map<string, { at: number; loader: string }>(); // requests that may still change the page
-  private loading = false; // the main frame is loading a new document
+  private loading = false; // the main frame is loading a new document, and hasn't parsed it yet
   private mainFrameId = '';
   // Medley's scripts run in an isolated world of the page's main frame: they
   // share its DOM but not its JavaScript, so the page can neither see nor
@@ -186,6 +186,12 @@ export class Page {
           break;
         case 'Page.frameStoppedLoading':
           if (p.frameId === this.mainFrameId) this.loading = false;
+          break;
+        // The new document is parsed: what it shows is there. Its load event
+        // can come many seconds later, after every ad and tracker on an ad-heavy
+        // page, so settle() waits for quiet from here instead.
+        case 'Page.domContentEventFired':
+          this.loading = false;
           break;
         case 'Page.javascriptDialogOpening':
           this.onDialog?.({ type: p.type, message: p.message, defaultPrompt: p.defaultPrompt });
@@ -401,18 +407,34 @@ export class Page {
   }
 
   async goto(url: string) {
-    const stopped = this.waitFor('Page.frameStoppedLoading', 20000, (p) => p.frameId === this.mainFrameId);
+    const parsed = this.parsed();
     const nav = await this.send('Page.navigate', { url });
     if (nav.errorText) throw new Error(`could not open ${url}: ${nav.errorText}`);
-    if (nav.loaderId) await stopped; // same-document (#hash) navigations have no loader
+    if (nav.loaderId) await parsed; // same-document (#hash) navigations have no loader
     // The caller settles (Session.act does, after every action).
   }
 
   /** Reload the page, from the cache as usual or, when `hard`, from the network. */
   async reload(hard = false) {
-    const stopped = this.waitFor('Page.frameStoppedLoading', 20000, (p) => p.frameId === this.mainFrameId);
+    const parsed = this.parsed();
     await this.send('Page.reload', { ignoreCache: hard });
-    await stopped;
+    await parsed;
+  }
+
+  /** Resolves when the main frame's new document is parsed, or its loading stops (a failure, a download). */
+  private parsed(timeout = 20000): Promise<void> {
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        off();
+        resolve();
+      };
+      const timer = setTimeout(done, timeout);
+      (timer as any).unref?.();
+      const off = this.on((m, p) => {
+        if (m === 'Page.domContentEventFired' || (m === 'Page.frameStoppedLoading' && p.frameId === this.mainFrameId)) done();
+      });
+    });
   }
 
   /** This tab's history: its pages, oldest first, and which one is showing. */

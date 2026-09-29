@@ -124,12 +124,16 @@ the same.
   back to the plain view.
 - **Advanced grid** draws the page itself, scaled to the terminal. Each block's
   text goes where the block was, in the page's own text colors, over its
-  background colors and card borders. Pictures are drawn in half-block
-  characters from a screenshot, which the UI fetches once per page (`r` fetches
-  it again). When text needs more rows than its box had on the page, everything
-  below moves down together, so blocks that lined up on the page still line up.
-  Things that were off the page to the side, such as a carousel's hidden
-  slides, aren't drawn, as on the page. A dialog floating over the page (a
+  background colors and card borders. Pictures come from a screenshot, which
+  the UI fetches once per page (`r` fetches it again), and are drawn the best
+  way the terminal can: Kitty graphics (Kitty, WezTerm, Ghostty), Sixel
+  (Windows Terminal and others), or else block characters, which work in any
+  terminal. OpenTUI picks; `OPENTUI_IMAGE_PROTOCOL=blocks|sixel|kitty`
+  overrides it. When text needs more rows than its box had on the page,
+  everything below moves down together, so blocks that lined up on the page
+  still line up. Things that were off the page to the side or above it, such
+  as a carousel's hidden slides or a hidden "skip to content" link, aren't
+  drawn, as on the page. A dialog floating over the page (a
   modal, a consent notice) is drawn as a bordered card where it floated,
   hiding what it covers, as on the page. The `#` and `──` markup of the text
   format is left out, and tables are drawn as ruled grids with a bold header
@@ -335,6 +339,14 @@ in each, a frame below the fold, and that refs stay put.
 `bun scripts/site-shots.ts <dir> [--as <url>]` drives the terminal UI through
 the demo shop in `docs/demo/` and saves its frames as HTML; the website's
 terminal pictures come from it.
+`bun run image-compare [url] [--pictures 6]` compares ways of drawing pictures
+in the terminal it runs in, side by side: the half blocks advanced grid drew
+at first, OpenTUI's quadrant blocks, Sixel and Kitty graphics. It shows a test card
+(`scripts/image-card.html`: gradients, fine text, thin lines, color), then the
+page's window and its biggest pictures, and says what the terminal reported
+supporting. Keys: ← → picture, 1-4 one technique alone, + − size, s a scroll
+test that times the frames, f draw techniques the terminal didn't report.
+`--check out.html` draws it into HTML instead, with a stand-in terminal.
 
 ## Known gaps
 
@@ -350,7 +362,3 @@ terminal pictures come from it.
   fixed to the window (chat buttons, cookie bars) appear where they sat at the
   top of the page. Pictures inside tables aren't drawn, since a grid's rows
   don't follow the page's.
-
-## Next
-
-- Images in the terminal UI via the kitty or sixel graphics protocols.

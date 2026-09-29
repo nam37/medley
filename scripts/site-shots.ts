@@ -15,7 +15,7 @@ import { pathToFileURL } from 'node:url';
 import { send } from '../src/client.ts';
 import { App } from '../src/tui/app.ts';
 import { sessionBackend } from '../src/tui/main.ts';
-import { frameHtml } from '../test/frame-html.ts';
+import { FRAME_CSS, frameHtml } from '../test/frame-html.ts';
 
 const args = process.argv.slice(2);
 const option = (name: string, fallback: string) => {
@@ -111,7 +111,7 @@ try {
 writeFileSync(
   join(out, 'all.html'),
   `<!doctype html><meta charset="utf-8"><title>medley frames</title>
-<style>body{margin:24px;background:#111;color:#ddd;font:14px system-ui}pre{margin:6px 0 28px;background:#1e1e1e;color:#ddd;font:13px/1.15 Consolas,Menlo,monospace;display:inline-block}</style>
+<style>body{margin:24px;background:#111;color:#ddd;font:14px system-ui}pre{margin:6px 0 28px;background:#1e1e1e;color:#ddd;font:13px/1.15 Consolas,Menlo,monospace;display:inline-block}${FRAME_CSS}</style>
 ${saved.map((name) => `<div>${name}</div><pre>${readFileSync(join(out, `${name}.html`), 'utf8')}</pre>`).join('\n')}`,
 );
 process.exit(0);

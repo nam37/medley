@@ -954,23 +954,24 @@ export class App {
     void this.loadPictures();
   }
 
-  /** In advanced grid, fetch a screenshot of the page (once per document) for its pictures. */
+  /**
+   * In advanced grid, fetch a screenshot of the page's pictures (once per
+   * document). A terminal that draws real pixels (Kitty graphics, Sixel) gets
+   * them at full size; block characters need a quarter of that.
+   */
   private async loadPictures() {
     const doc = this.current?.doc;
     if (!doc || this.page.gridMode !== 'advanced' || this.picturesFor === doc) return;
     if (!this.current?.visual?.images.length) return;
     this.picturesFor = doc;
     try {
-      const reply = await this.backend.request('pictures');
+      const full = this.page.imageProtocol !== 'blocks';
+      const reply = await this.backend.request('pictures', full ? { scale: 1, quality: 85 } : {});
       const shot = JSON.parse(reply.text) as Screenshot;
       if (this.current?.doc !== doc) return; // moved on meanwhile
-      const image = NativeImage.decode(Buffer.from(shot.jpeg, 'base64'));
-      try {
-        const raw = image.raw('rgba8');
-        this.page.setPixels({ data: raw.data, width: raw.width, height: raw.height, stride: raw.stride, scale: raw.width / shot.width });
-      } finally {
-        image.dispose();
-      }
+      // Sessions from before PNG pictures call it `jpeg`.
+      const image = NativeImage.decode(Buffer.from(shot.image ?? (shot as unknown as { jpeg: string }).jpeg, 'base64'));
+      this.page.setPicture(image, image.width / shot.width);
     } catch {
       this.picturesFor = null; // try again next time
     }

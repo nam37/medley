@@ -8,7 +8,12 @@ type Spans = ReturnType<Awaited<ReturnType<typeof createTestRenderer>>['captureS
 type Color = { buffer: ArrayLike<number> };
 
 const css = (c: Color) => `rgba(${c.buffer[0]},${c.buffer[1]},${c.buffer[2]},${c.buffer[3] / 255})`;
-const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+// Block characters (pictures drawn in cells) go in <i>s kept one cell wide:
+// fonts without the quadrant blocks borrow wider ones from other fonts.
+const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/[▀-▟]/g, (c) => `<i>${c}</i>`);
+
+/** CSS for a page showing frames: keeps block characters to their cells. */
+export const FRAME_CSS = 'pre i{font-style:normal;display:inline-block;width:1ch;height:1.15em;overflow:hidden;vertical-align:top}';
 
 /** The frame's lines as HTML, for a <pre> whose own colors are the terminal's default foreground and background. */
 export function frameHtml(frame: Spans, background = '#1e1e1e'): string {

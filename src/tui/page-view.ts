@@ -7,11 +7,14 @@
 //    columns (when every column gets a readable width);
 //  - advanced: the page itself, scaled to the terminal. Each line's text goes
 //    where its box was, over the page's backgrounds and card borders, with
-//    pictures drawn from a screenshot in half-block characters.
+//    pictures from a screenshot, drawn the best way the terminal can: Kitty
+//    graphics, Sixel, or block characters (OpenTUI chooses).
 
 import {
+  NativeImage,
   RGBA,
   Renderable,
+  resolveImageRenderProtocol,
   TextAttributes,
   type MouseEvent,
   type OptimizedBuffer,
@@ -86,15 +89,6 @@ export interface PageRef extends Token {
   textEnd: number;
 }
 
-/** A screenshot's pixels: RGBA rows, `scale` pixels per page pixel. */
-export interface Pixels {
-  data: Uint8Array;
-  width: number;
-  height: number;
-  stride: number;
-  scale: number;
-}
-
 /** Part of a line drawn at column `x` of the view (after the gutter). */
 interface Piece {
   line: number;
@@ -117,6 +111,49 @@ interface Area {
   col: number;
   rows: number;
   cols: number;
+}
+
+/** A picture on the page canvas: `image` indexes Visual.images. */
+interface Picture extends Area {
+  image: number;
+  layer?: number;
+  patched?: { image: NativeImage; x: number; y: number } | null; // see PageView.pictureSource; null when it needs none
+}
+
+/**
+ * Fill the gaps (1s in `gap`) of an RGBA image from the colors around them:
+ * down each column from a known color above (a background's gradient carries
+ * on), then for gaps at the top, from below. The color is taken a few pixels
+ * away from the gap, since right at its edge is the covering picture's
+ * shadow, which would streak down the whole gap.
+ */
+function fillGaps(data: Uint8Array, stride: number, w: number, h: number, gap: Uint8Array) {
+  const AWAY = 6;
+  const copy = (from: number, to: number, x: number) => data.copyWithin(to * stride + x * 4, from * stride + x * 4, from * stride + x * 4 + 4);
+  for (let x = 0; x < w; x++) {
+    let known = -1; // where the run of known pixels above starts
+    let source = -1; // the row the gap below copies
+    for (let y = 0; y < h; y++) {
+      const i = y * w + x;
+      if (!gap[i]) {
+        if (known < 0 || source >= 0) {
+          known = y;
+          source = -1;
+        }
+        continue;
+      }
+      if (source < 0 && known >= 0) source = Math.max(known, y - 1 - AWAY);
+      if (source < 0) continue; // a gap at the top: filled from below next
+      copy(source, y, x);
+      gap[i] = 2;
+    }
+    let first = 0;
+    while (first < h && gap[first * w + x] === 1) first++;
+    if (first === 0 || first === h) continue;
+    let below = first;
+    while (below + 1 < h && below - first < AWAY && !gap[(below + 1) * w + x]) below++;
+    for (let y = 0; y < first; y++) copy(below, y, x);
+  }
 }
 
 interface Match {
@@ -203,7 +240,7 @@ export class PageView extends Renderable {
   private changed = new Set<number>();
   private groups = new Map<string, LayoutGroup>(); // by `${depth}:${first line}`
   private visual: Visual | null = null;
-  private pixels: Pixels | null = null;
+  private picture: { image: NativeImage; scale: number } | null = null; // the page's pictures; image pixels per page pixel
   private mode: GridMode = 'none';
   private rows: Row[] = [];
   private rowOfLine = new Int32Array(0); // first row showing each line, or -1
@@ -212,7 +249,7 @@ export class PageView extends Renderable {
   private canvas = false; // the current layout is the page canvas
   // On the page canvas, what's in a floating dialog carries its `layer`, drawn over the page.
   private decor: (Area & { bg?: RGBA; bd?: RGBA; layer?: number })[] = [];
-  private pictures: (Area & { image: number; cells?: RGBA[]; layer?: number })[] = [];
+  private pictures: Picture[] = [];
   private rules: { row: number; col: number; text: string; layer?: number }[] = []; // tables' grid lines
   private layers: (Area & { bg: RGBA; bd: RGBA })[] = []; // each floating dialog's card
   private topRow = 0;
@@ -245,7 +282,7 @@ export class PageView extends Renderable {
     this.changed = changed;
     this.groups = new Map(layout.map((g) => [`${g.depth}:${g.cells[0].start}`, g]));
     this.visual = visual;
-    if (fresh) this.pixels = null;
+    if (fresh) this.setPicture(null);
     let inFence = false;
     this.fenced = lines.map((l) => {
       if (l.startsWith('```')) {
@@ -272,11 +309,39 @@ export class PageView extends Renderable {
     this.requestRender();
   }
 
-  /** The page screenshot's pixels, for drawing pictures in advanced grid. */
-  setPixels(pixels: Pixels | null) {
-    this.pixels = pixels;
-    for (const p of this.pictures) p.cells = undefined;
+  /**
+   * The page's pictures, as one screenshot of them (`scale` image pixels to a
+   * page pixel), for advanced grid. The view keeps the image and disposes of it.
+   */
+  setPicture(image: NativeImage | null, scale = 1) {
+    this.picture?.image.dispose();
+    this.picture = image ? { image, scale } : null;
+    this.dropPatches();
     this.requestRender();
+  }
+
+  /** How this terminal draws pictures: Kitty graphics, Sixel, or block characters. */
+  get imageProtocol(): 'kitty' | 'sixel' | 'blocks' {
+    return resolveImageRenderProtocol('auto', this._ctx.capabilities, !!this.pixelSize);
+  }
+
+  /** The terminal's size in pixels, once it has said. */
+  private get pixelSize() {
+    const r = this._ctx.resolution;
+    const ok = r && r.width > 0 && r.height > 0 && (this._ctx.terminalWidth ?? 0) > 0 && (this._ctx.terminalHeight ?? 0) > 0;
+    return ok ? r : null;
+  }
+
+  private dropPatches() {
+    for (const p of this.pictures) {
+      p.patched?.image.dispose();
+      p.patched = undefined;
+    }
+  }
+
+  protected destroySelf() {
+    this.setPicture(null);
+    super.destroySelf();
   }
 
   get refCount(): number {
@@ -321,6 +386,7 @@ export class PageView extends Renderable {
     this.columnGroups = 0;
     this.canvas = this.mode === 'advanced' && !!this.visual && width > 0;
     this.decor = [];
+    this.dropPatches();
     this.pictures = [];
     this.layers = [];
     this.rules = [];
@@ -408,6 +474,7 @@ export class PageView extends Renderable {
     const boxOf = (i: number) => v.lines[i]?.[0];
     const last: Rect[] = [[0, 0, v.width, 0], ...layers.map((l): Rect => [l.r[0], l.r[1], l.r[2], 0])];
     const lineLayer = new Int32Array(this.lines.length);
+    const onPage = (r: Rect) => r[0] < v.width && r[0] + r[2] > 0 && r[1] + r[3] > 0;
     const skip = (i: number) => !this.lines[i].trim() || (!this.fenced[i] && isDivider(this.lines[i]));
     for (let i = 0; i < this.lines.length; ) {
       if (skip(i)) {
@@ -430,8 +497,8 @@ export class PageView extends Renderable {
       // A container's own text that follows its children belongs after them, not at its top.
       const inside = r[0] <= prev[0] && r[1] <= prev[1] && r[0] + r[2] >= prev[0] + prev[2] && r[1] + r[3] >= prev[1] + prev[3];
       if (inside && r[1] < prev[1]) r = [r[0], prev[1], r[2], Math.max(0, r[1] + r[3] - prev[1])];
-      // Off the page to the side (carousel slides, skip links) isn't drawn, as on the page itself.
-      if (r[0] < v.width && r[0] + r[2] > 0) {
+      // Off the page to the side or above it (carousel slides, skip links) isn't drawn, as on the page itself.
+      if (onPage(r)) {
         items[layer].push({ r, order: items[layer].length, lines: [i, j], table: !!v.boxes[key]?.table });
         lineLayer.fill(layer, i, j);
       }
@@ -508,7 +575,7 @@ export class PageView extends Renderable {
     const underText = (layer: number, mapRow: (y: number) => number) => {
       v.images.forEach((im, image) => {
         // A grid's rows don't follow the page's, so a picture in a table would land on the wrong row.
-        if ((im.layer ?? 0) !== layer || inTable(im.r)) return;
+        if ((im.layer ?? 0) !== layer || !onPage(im.r) || inTable(im.r)) return;
         const fullCol = Math.round(im.r[0] * sx);
         const fullCols = Math.max(1, Math.round(im.r[2] * sx));
         const fullRows = Math.max(1, pageRow(im.r[3]));
@@ -532,7 +599,7 @@ export class PageView extends Renderable {
         this.pictures.push({ row, col, rows: rowsHigh, cols, image, layer: layer || undefined });
       });
       for (const d of v.decor) {
-        if ((d.layer ?? 0) !== layer) continue;
+        if ((d.layer ?? 0) !== layer || !onPage(d.r)) continue;
         // A table's own background covers its grid, which draws its own lines.
         const table = tables.find((t) => t.r.every((n, i) => n === d.r[i]));
         if (table) {
@@ -568,16 +635,25 @@ export class PageView extends Renderable {
     // of padding, and its own text and pictures inside, as tall as they need.
     layers.forEach((l, k) => {
       const layer = k + 1;
-      const cols = Math.min(width, Math.max(8, Math.round(l.r[2] * sx)));
-      const col = Math.min(Math.max(0, Math.round(l.r[0] * sx)), width - cols);
-      const row = mapRow(l.r[1]);
+      // A dialog with no background of its own only holds its content (often
+      // a box in the middle of a wrapper the size of the window): the card is
+      // what's in it.
+      const content = [
+        ...items[layer].map((it) => it.r),
+        ...v.decor.filter((d) => d.layer === layer).map((d) => d.r),
+        ...v.images.filter((im) => im.layer === layer).map((im) => im.r),
+      ];
+      const box = (!l.bg && union(content)) || l.r;
+      const cols = Math.min(width, Math.max(8, Math.round(box[2] * sx)));
+      const col = Math.min(Math.max(0, Math.round(box[0] * sx)), width - cols);
+      const row = mapRow(box[1]);
       const pad = cols >= 12 ? 2 : 1;
-      const delta = row + 1 - pageRow(l.r[1]);
+      const delta = row + 1 - pageRow(box[1]);
       const rules = this.rules.length;
       const inner = place(items[layer], layer, col + pad, col + cols - pad, delta, row + 1);
       for (let i = rules; i < this.rules.length; i++) this.rules[i].layer = layer;
       underText(layer, (y) => pageRow(y) + delta + inner.shiftAt(y));
-      const rowsHigh = Math.max(pageRow(l.r[3]), inner.end + 1 - row);
+      const rowsHigh = Math.max(pageRow(box[3]), inner.end + 1 - row);
       this.layers.push({ row, col, rows: rowsHigh, cols, bg: color(l.bg ?? v.canvas), bd: l.bd ? color(l.bd) : TABLE_RULE });
     });
     this.decor.sort((a, b) => b.rows * b.cols - a.rows * a.cols);
@@ -934,7 +1010,7 @@ export class PageView extends Renderable {
           let attrs = s.attrs[i] | (p.bold ? TextAttributes.BOLD : 0);
           if (this.canvas && !bg) {
             // The picture itself is drawn, so its [img …] label would only cover it.
-            if (s.refAt[i] === -1 && this.pixels) {
+            if (s.refAt[i] === -1 && this.picture) {
               x += cells;
               i = j;
               continue;
@@ -954,7 +1030,7 @@ export class PageView extends Renderable {
 
   /** Whether cells [col, col + cols) of a canvas row lie over a picture drawn in that layer. */
   private overPicture(row: number, col: number, cols: number, layer = 0): boolean {
-    if (!this.pixels) return false;
+    if (!this.picture) return false;
     return this.pictures.some(
       (p) => (p.layer ?? 0) === layer && row >= p.row && row < p.row + p.rows && col < p.col + p.cols && col + cols > p.col,
     );
@@ -1007,35 +1083,68 @@ export class PageView extends Renderable {
     const width = this.width - GUTTER;
     for (const p of this.pictures) {
       if (!inLayer(p) || !visible(p)) continue;
-      const cells = this.pixels ? (p.cells ??= this.sample(p)) : undefined;
       const from = Math.max(0, -p.col);
       const to = Math.min(p.cols, width - p.col); // clipped at the view's edges
-      for (let row = Math.max(p.row, top); row < Math.min(p.row + p.rows, bottom); row++) {
-        const y = yOf(row);
-        if (!cells) {
-          buffer.fillRect(x0 + p.col + from, y, to - from, 1, PLACEHOLDER);
-          continue;
-        }
-        for (let c = from; c < to; c++) {
-          const k = ((row - p.row) * p.cols + c) * 2;
-          buffer.drawText('▀', x0 + p.col + c, y, cells[k], cells[k + 1]);
-        }
-      }
-      if (!cells && p.row >= top && v.images[p.image].alt) {
+      const rows: [number, number] = [Math.max(p.row, top) - p.row, Math.min(p.row + p.rows, bottom) - p.row];
+      if (to <= from) continue;
+      if (this.picture && this.drawPicture(buffer, p, x0, yOf, [from, to], rows)) continue;
+      // Not fetched yet, or past where the screenshot reached: a placeholder, with what the picture shows.
+      buffer.fillRect(x0 + p.col + from, yOf(p.row + rows[0]), to - from, rows[1] - rows[0], PLACEHOLDER);
+      if (p.row >= top && v.images[p.image].alt) {
         buffer.drawText(v.images[p.image].alt.slice(0, Math.max(0, p.cols - 2)), x0 + p.col + 1, yOf(p.row), THEME.dim, PLACEHOLDER);
       }
     }
   }
 
   /**
-   * Average the screenshot over each half-cell of a picture: upper and lower
-   * color per cell. Smaller pictures lying on this one (product shots on a
-   * hero background) are drawn on their own, where their content ended up;
-   * their pixels here would be a second copy, so those spots are filled with
-   * the surrounding color instead.
+   * Draw columns `cols` and rows `rows` of a picture (counted within it) the
+   * best way the terminal can. Parts the screenshot didn't reach (off the side
+   * of the page, below where it stopped) are left out; false when that's all of it.
    */
-  private sample(p: Area & { image: number }): RGBA[] {
-    const px = this.pixels!;
+  private drawPicture(
+    buffer: OptimizedBuffer,
+    p: Picture,
+    x0: number,
+    yOf: (row: number) => number,
+    cols: [number, number],
+    rows: [number, number],
+  ): boolean {
+    const src = this.pictureSource(p);
+    const { scale } = this.picture!;
+    const box = this.visual!.images[p.image].r;
+    const [bx, by, bw, bh] = box.map((n) => n * scale);
+    let [c0, c1] = cols;
+    let [r0, r1] = rows;
+    c0 = Math.max(c0, Math.ceil(((src.x - bx) / bw) * p.cols));
+    c1 = Math.min(c1, Math.floor(((src.x + src.image.width - bx) / bw) * p.cols));
+    r0 = Math.max(r0, Math.ceil(((src.y - by) / bh) * p.rows));
+    r1 = Math.min(r1, Math.floor(((src.y + src.image.height - by) / bh) * p.rows));
+    if (c1 <= c0 || r1 <= r0) return false;
+    const left = Math.max(0, Math.min(src.image.width - 1, Math.round(bx + (c0 / p.cols) * bw - src.x)));
+    const top = Math.max(0, Math.min(src.image.height - 1, Math.round(by + (r0 / p.rows) * bh - src.y)));
+    const width = Math.max(1, Math.min(src.image.width - left, Math.round(((c1 - c0) / p.cols) * bw)));
+    const height = Math.max(1, Math.min(src.image.height - top, Math.round(((r1 - r0) / p.rows) * bh)));
+    // Sixel needs the size in the terminal's pixels; without it OpenTUI draws blocks.
+    const px = this.pixelSize;
+    const pw = px ? Math.max(1, Math.round(((c1 - c0) * px.width) / this._ctx.terminalWidth!)) : 0;
+    const ph = px ? Math.max(1, Math.round(((r1 - r0) * px.height) / this._ctx.terminalHeight!)) : 0;
+    return buffer.drawImage(src.image, x0 + p.col + c0, yOf(p.row + r0), c1 - c0, r1 - r0, pw, ph, left, top, width, height, 'auto');
+  }
+
+  /**
+   * The image to draw a picture from, and where that image sits in the
+   * screenshot: the screenshot itself, or for a picture with smaller ones
+   * lying on it (product shots on a hero background) a copy of it with those
+   * filled in from the colors around them. They're drawn on their own, where
+   * their content ended up, so their pixels here would be a second copy.
+   */
+  private pictureSource(p: Picture): { image: NativeImage; x: number; y: number } {
+    if (p.patched === undefined) p.patched = this.patch(p);
+    return p.patched ?? { image: this.picture!.image, x: 0, y: 0 };
+  }
+
+  private patch(p: Picture): { image: NativeImage; x: number; y: number } | null {
+    const { image, scale } = this.picture!;
     const images = this.visual!.images;
     const r = images[p.image].r;
     const on = images
@@ -1046,76 +1155,25 @@ export class PageView extends Renderable {
         return cx >= r[0] && cx <= r[0] + r[2] && cy >= r[1] && cy <= r[1] + r[3];
       })
       .map((o) => o.r);
-    const covered = (x: number, y: number) => on.some((o) => x >= o[0] && x < o[0] + o[2] && y >= o[1] && y < o[1] + o[3]);
-
-    // halves[h][c]: the color of half-row h, column c, or null where another picture lies.
-    const halves = p.rows * 2;
-    const grid: ([number, number, number] | null)[][] = [];
-    for (let h = 0; h < halves; h++) {
-      const line: ([number, number, number] | null)[] = [];
-      const top = r[1] + (h * r[3]) / halves;
-      const bottom = r[1] + ((h + 1) * r[3]) / halves;
-      for (let c = 0; c < p.cols; c++) {
-        const left = r[0] + (c * r[2]) / p.cols;
-        const right = r[0] + ((c + 1) * r[2]) / p.cols;
-        if (covered((left + right) / 2, (top + bottom) / 2)) {
-          line.push(null);
-          continue;
-        }
-        const x0 = Math.floor(left * px.scale);
-        const x1 = Math.max(x0 + 1, Math.floor(right * px.scale));
-        const y0 = Math.floor(top * px.scale);
-        const y1 = Math.max(y0 + 1, Math.floor(bottom * px.scale));
-        let red = 0;
-        let green = 0;
-        let blue = 0;
-        let n = 0;
-        // At most 4×4 samples per half-cell keeps big pictures cheap.
-        const stepX = Math.max(1, Math.floor((x1 - x0) / 4));
-        const stepY = Math.max(1, Math.floor((y1 - y0) / 4));
-        for (let y = y0; y < y1; y += stepY) {
-          if (y < 0 || y >= px.height) continue;
-          for (let x = x0; x < x1; x += stepX) {
-            if (x < 0 || x >= px.width) continue;
-            const i = y * px.stride + x * 4;
-            red += px.data[i];
-            green += px.data[i + 1];
-            blue += px.data[i + 2];
-            n++;
-          }
-        }
-        line.push(n ? [red / n, green / n, blue / n] : null);
-      }
-      grid.push(line);
+    if (!on.length) return null;
+    const x = Math.max(0, Math.round(r[0] * scale));
+    const y = Math.max(0, Math.round(r[1] * scale));
+    const w = Math.min(image.width, Math.round((r[0] + r[2]) * scale)) - x;
+    const h = Math.min(image.height, Math.round((r[1] + r[3]) * scale)) - y;
+    if (w < 1 || h < 1) return null;
+    const part = image.extract({ left: x, top: y, width: w, height: h });
+    const raw = part.raw('rgba8');
+    part.dispose();
+    const gap = new Uint8Array(w * h);
+    for (const o of on) {
+      const gx0 = Math.max(0, Math.round(o[0] * scale) - x);
+      const gx1 = Math.min(w, Math.round((o[0] + o[2]) * scale) - x);
+      const gy0 = Math.max(0, Math.round(o[1] * scale) - y);
+      const gy1 = Math.min(h, Math.round((o[1] + o[3]) * scale) - y);
+      if (gx1 > gx0) for (let gy = gy0; gy < gy1; gy++) gap.fill(1, gy * w + gx0, gy * w + gx1);
     }
-
-    // Fill each gap from the known color above it in its column (a background's
-    // gradient carries on), or else below it. The color is taken a few
-    // half-rows away from the gap, since right at its edge is the covering
-    // picture's shadow, which would streak down the whole gap.
-    const fill = (order: number[], c: number) => {
-      const seen: [number, number, number][] = [];
-      for (const h of order) {
-        const k = grid[h][c];
-        if (k) seen.push(k);
-        else if (seen.length) grid[h][c] = seen[Math.max(0, seen.length - 3)];
-      }
-    };
-    const down = Array.from({ length: halves }, (_, h) => h);
-    for (let c = 0; c < p.cols; c++) {
-      fill(down, c);
-      fill([...down].reverse(), c);
-    }
-    const out: RGBA[] = [];
-    for (let row = 0; row < p.rows; row++) {
-      for (let c = 0; c < p.cols; c++) {
-        for (const h of [row * 2, row * 2 + 1]) {
-          const k = grid[h][c];
-          out.push(k ? RGBA.fromInts(Math.round(k[0]), Math.round(k[1]), Math.round(k[2]), 255) : PLACEHOLDER);
-        }
-      }
-    }
-    return out;
+    fillGaps(raw.data, raw.stride, w, h, gap);
+    return { image: NativeImage.fromRgba(raw.data, w, h, raw.stride), x, y };
   }
 
   protected onMouseEvent(e: MouseEvent) {

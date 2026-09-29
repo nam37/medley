@@ -7,7 +7,7 @@ import { NativeImage } from '@opentui/core';
 import { createTestRenderer } from '@opentui/core/testing';
 import { writeFileSync } from 'node:fs';
 import { toUrl } from '../src/commands.ts';
-import { frameHtml } from './frame-html.ts';
+import { FRAME_CSS, frameHtml } from './frame-html.ts';
 import { Session } from '../src/session.ts';
 import { PageView, type GridMode } from '../src/tui/page-view.ts';
 
@@ -43,17 +43,15 @@ try {
   view.setPage(page.body, new Map(page.labels), new Set(), true, page.layout, page.visual);
   view.gridMode = mode;
   if (shot) {
-    const image = NativeImage.decode(Buffer.from(shot.jpeg, 'base64'));
-    const raw = image.raw('rgba8');
-    image.dispose();
-    view.setPixels({ data: raw.data, width: raw.width, height: raw.height, stride: raw.stride, scale: raw.width / shot.width });
+    const image = NativeImage.decode(Buffer.from(shot.image, 'base64'));
+    view.setPicture(image, image.width / shot.width); // drawn in blocks: the test renderer is no terminal
   }
   await setup.renderOnce();
 
   writeFileSync(
     out,
     `<!doctype html><meta charset="utf-8"><title>medley preview</title>
-<style>body{margin:0;background:#1e1e1e;color:#ddd}pre{margin:0;font:13px/1.15 Consolas,Menlo,monospace}</style>
+<style>body{margin:0;background:#1e1e1e;color:#ddd}pre{margin:0;font:13px/1.15 Consolas,Menlo,monospace}${FRAME_CSS}</style>
 <pre>${frameHtml(setup.captureSpans())}</pre>`,
   );
   console.log(`${page.title} · ${mode} · ${width}x${rows} → ${out}`);

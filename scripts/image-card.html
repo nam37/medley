@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>medley image test card</title>
+  <!-- A picture with what tells ways of drawing images apart: smooth gradients
+       (banding), fine text and thin lines (resolution), checkerboards and rings
+       (aliasing), and saturated and subtle colors (palette). image-compare.ts
+       screenshots the 1280×720 card. -->
+  <style>
+    html, body { margin: 0; background: #ffffff; }
+    .card {
+      width: 1280px; height: 720px; box-sizing: border-box; padding: 16px;
+      display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 16px;
+      font-family: Georgia, 'Times New Roman', serif; color: #1a1a1a;
+    }
+    .tile { border: 1px solid #c8c8c8; padding: 10px; display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
+    h2 { margin: 0; font: bold 13px/1 Verdana, sans-serif; letter-spacing: 0.04em; text-transform: uppercase; color: #555; }
+    .bar { height: 44px; }
+    .hue { background: linear-gradient(90deg, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00); }
+    .gray { background: linear-gradient(90deg, #000, #fff); }
+    .sky { background: linear-gradient(90deg, #0b1d3a, #3a6ea5, #f4d9a8, #f28c38); }
+    .steps { display: grid; grid-template-columns: repeat(16, 1fr); height: 36px; }
+    .text p { margin: 0; white-space: nowrap; }
+    .dark { background: #1d2733; color: #f2f2f2; padding: 2px 4px; }
+    .clash { background: #1e40c8; color: #e8312a; padding: 2px 4px; }
+    .patterns { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; flex: 1; }
+    .patterns div { position: relative; }
+    .patterns span { position: absolute; left: 2px; bottom: 2px; font: 10px Verdana, sans-serif; background: #fff; padding: 0 2px; }
+    .check1 { background: repeating-conic-gradient(#000 0 25%, #fff 0 50%) 0 0 / 2px 2px; }
+    .check2 { background: repeating-conic-gradient(#000 0 25%, #fff 0 50%) 0 0 / 4px 4px; }
+    .check4 { background: repeating-conic-gradient(#000 0 25%, #fff 0 50%) 0 0 / 8px 8px; }
+    .check8 { background: repeating-conic-gradient(#000 0 25%, #fff 0 50%) 0 0 / 16px 16px; }
+    .hlines { background: repeating-linear-gradient(0deg, #000 0 1px, #fff 1px 3px); }
+    .vlines { background: repeating-linear-gradient(90deg, #000 0 1px, #fff 1px 3px); }
+    .diag { background: repeating-linear-gradient(45deg, #000 0 1px, #fff 1px 4px); }
+    .rings { background: repeating-radial-gradient(circle at 50% 50%, #000 0 1px, #fff 1px 3px); }
+    .colors { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; flex: 1; }
+    .swatches { display: grid; grid-template-columns: repeat(4, 1fr); grid-auto-rows: 1fr; gap: 4px; }
+    .sphere { border-radius: 50%; background: radial-gradient(circle at 35% 30%, #fff 0, #9fd8c4 12%, #0a7d5e 45%, #06382b 80%, #021510 100%); aspect-ratio: 1; max-height: 100%; justify-self: center; }
+    .shapes { display: flex; align-items: center; justify-content: space-around; }
+    .shapes img { width: 96px; image-rendering: pixelated; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <section class="tile">
+      <h2>Gradients</h2>
+      <div class="bar hue"></div>
+      <div class="bar gray"></div>
+      <div class="bar sky"></div>
+      <div class="steps" id="steps"></div>
+    </section>
+    <section class="tile text">
+      <h2>Text</h2>
+      <p style="font-size: 36px">Sphinx of black quartz</p>
+      <p style="font-size: 24px">Sphinx of black quartz, judge my vow</p>
+      <p style="font-size: 16px">Sphinx of black quartz, judge my vow. 0123456789 $%&amp;@</p>
+      <p style="font-size: 12px">Sphinx of black quartz, judge my vow. The five boxing wizards jump quickly. 0123456789</p>
+      <p style="font-size: 10px">Sphinx of black quartz, judge my vow. The five boxing wizards jump quickly. Pack my box with five dozen liquor jugs.</p>
+      <p style="font-size: 8px">Sphinx of black quartz, judge my vow. The five boxing wizards jump quickly. Pack my box with five dozen liquor jugs. 0123456789</p>
+      <p style="font-size: 16px"><span class="dark">Light text on a dark ground</span> <span class="clash">Red on blue</span></p>
+    </section>
+    <section class="tile">
+      <h2>Lines and patterns</h2>
+      <div class="patterns">
+        <div class="check1"><span>1px</span></div>
+        <div class="check2"><span>2px</span></div>
+        <div class="check4"><span>4px</span></div>
+        <div class="check8"><span>8px</span></div>
+        <div class="hlines"><span>rows</span></div>
+        <div class="vlines"><span>columns</span></div>
+        <div class="diag"><span>diagonal</span></div>
+        <div class="rings"><span>rings</span></div>
+      </div>
+    </section>
+    <section class="tile">
+      <h2>Color and shape</h2>
+      <div class="colors">
+        <div class="swatches" id="swatches"></div>
+        <div class="shapes">
+          <div class="sphere" style="width: 150px"></div>
+          <img src="../docs/assets/logo.png" alt="medley logo">
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+    for (let i = 0; i < 16; i++) {
+      const v = Math.round((i * 255) / 15);
+      document.getElementById('steps').insertAdjacentHTML('beforeend', `<div style="background: rgb(${v},${v},${v})"></div>`);
+    }
+    // Saturated primaries and secondaries, then skin tones and near-whites (subtle steps).
+    const colors = ['#e6194b', '#f58231', '#ffe119', '#3cb44b', '#42d4f4', '#4363d8', '#911eb4', '#f032e6',
+      '#8d5524', '#c68642', '#e0ac69', '#f1c27d', '#ffffff', '#f7f7f2', '#eeeee6', '#e4e4dc'];
+    for (const c of colors) document.getElementById('swatches').insertAdjacentHTML('beforeend', `<div style="background: ${c}; border: 1px solid #ddd"></div>`);
+  </script>
+</body>
+</html>

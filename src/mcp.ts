@@ -4,6 +4,7 @@
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { send, type StartOptions } from './client.ts';
+import { searchUrl } from './commands.ts';
 
 const REF = { type: 'integer', description: 'The number of an element in the latest snapshot' };
 
@@ -29,6 +30,12 @@ const TOOLS: Tool[] = [
     cmd: 'goto',
     description: 'Open a URL (starting the browser if needed) and return the page as text.',
     inputSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
+  },
+  {
+    name: 'browser_search',
+    cmd: 'goto',
+    description: 'Search the web for `query` and return the results page as text (Bing by default).',
+    inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
   },
   {
     name: 'browser_snapshot',
@@ -132,6 +139,12 @@ const TOOLS: Tool[] = [
     inputSchema: { type: 'object', properties: {} },
   },
   {
+    name: 'browser_history',
+    cmd: 'history',
+    description: "List this tab's pages, oldest first, or go to the n-th one (as numbered in that list).",
+    inputSchema: { type: 'object', properties: { n: { type: 'integer' } } },
+  },
+  {
     name: 'browser_forward',
     cmd: 'forward',
     description: 'Go forward again after going back.',
@@ -184,6 +197,7 @@ export async function serveMcp(sessionName: string, start: StartOptions) {
         try {
           const args = { ...(params.arguments ?? {}) };
           if (tool.cmd === 'upload' && Array.isArray(args.files)) args.files = args.files.map((f: unknown) => resolve(String(f)));
+          if (tool.name === 'browser_search') args.url = searchUrl(String(args.query ?? ''));
           const command = { cmd: tool.cmd, args, client };
           const text = await send(sessionName, command, tool.cmd === 'goto' ? start : undefined);
           return { content: [{ type: 'text', text }] };

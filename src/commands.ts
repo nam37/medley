@@ -29,6 +29,12 @@ export function toUrl(address: string): string {
   return LOCAL.test(address) ? `http://${address}` : `https://${address}`;
 }
 
+/** Where searches go: MEDLEY_SEARCH, a URL with %s where the words go, or Bing (which answers headless browsers). */
+export function searchUrl(words: string): string {
+  const engine = process.env.MEDLEY_SEARCH || 'https://www.bing.com/search?q=%s';
+  return engine.replace('%s', encodeURIComponent(words.trim()).replace(/%20/g, '+'));
+}
+
 /** Whether typed text looks like a web address, rather than a stray word like "q". */
 export function looksLikeAddress(text: string): boolean {
   if (/\s/.test(text)) return false;
@@ -63,6 +69,11 @@ export function parseCommand([command, ...rest]: string[], flags: CommandFlags =
     case 'goto':
       need(1, 'goto <url>');
       return { cmd: 'goto', args: { url: toUrl(rest[0]), links: flags.links }, start: true };
+    case 'search':
+      need(1, 'search <words>');
+      return { cmd: 'goto', args: { url: searchUrl(rest.join(' ')), links: flags.links }, start: true };
+    case 'history':
+      return { cmd: 'history', args: { n: rest[0] } };
     case 'snapshot':
       return { cmd: 'snapshot', args: { diff: flags.diff, links: flags.links } };
     case 'click':

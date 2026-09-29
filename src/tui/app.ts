@@ -15,10 +15,11 @@ import {
 } from '@opentui/core';
 import { STALE_HINT, type Reply, type SessionEvent } from '../client.ts';
 import { resolve } from 'node:path';
-import { looksLikeAddress, parseCommand, splitFlags, splitWords, toUrl } from '../commands.ts';
+import { addBookmark, readBookmarks, removeBookmark } from '../bookmarks.ts';
+import { looksLikeAddress, parseCommand, searchUrl, splitFlags, splitWords, toUrl } from '../commands.ts';
 import { changedLines } from '../diff.ts';
 import type { Screenshot, View } from '../session.ts';
-import { Bar, type Segment } from './bar.ts';
+import { Bar, fit as fitText, type Segment } from './bar.ts';
 import { GRID_LABELS, GRID_MODES, PageView, type PageRef } from './page-view.ts';
 import { THEME } from './theme.ts';
 
@@ -32,7 +33,10 @@ export interface Backend {
   stale?(): boolean;
 }
 
-type PromptKind = 'url' | 'field' | 'secret' | 'select' | 'file' | 'command' | 'find' | 'answer';
+/** A line of the bookmarks-and-history list: a bookmark, or a page of this tab's history. */
+type PickItem = { kind: 'bookmark'; n: number; title: string; url: string } | { kind: 'history'; n: number; title: string; url: string; current: boolean };
+
+type PromptKind ='url' | 'field' | 'secret' | 'select' | 'file' | 'command' | 'find' | 'answer';
 interface Prompt {
   kind: PromptKind;
   label: string;
@@ -41,7 +45,7 @@ interface Prompt {
 
 // Shown in the status line while a prompt is open, since its keys differ from browsing.
 const PROMPT_HINTS: Record<PromptKind, string> = {
-  url: 'type a web address, like en.wikipedia.org · Enter opens it · Esc cancels',
+  url: 'type a web address, like en.wikipedia.org, or words to search for · Enter · Esc cancels',
   field: 'Enter types and submits · Tab types only · Esc cancels',
   secret: 'what you type is hidden · Enter types and submits · Tab types only · Esc cancels',
   select: "type an option's text · Enter chooses it · Esc cancels",
@@ -76,6 +80,8 @@ const HELP = [
   '/, then n N        find text, then the next or previous match',
   ':                  run a command: press Escape, wait 2, select 6 High, …',
   'v                  grid: none → partial (main columns) → advanced (nested too)',
+  'a                  bookmark this page',
+  "B                  bookmarks and this tab's history: a number, then Enter opens",
   'r, R               reload the page (R: bypassing the cache)',
   'w                  wait 2 seconds and show what the page changed by itself',
   'y n                accept or dismiss a dialog the page opened',
@@ -94,6 +100,9 @@ export class App {
   private promptLabel: Bar;
   private input: InputRenderable;
   private help: BoxRenderable;
+  private pages: BoxRenderable; // the bookmarks-and-history list (B)
+  private pagesText: TextRenderable;
+  private picker: { items: PickItem[]; digits: string } | null = null;
 
   private current: View['page'] = null;
   private dialog: View['dialog'] = null;
@@ -167,6 +176,24 @@ export class App {
     });
     this.help.add(new TextRenderable(renderer, { content: HELP.join('\n'), fg: THEME.barFg, paddingLeft: 1 }));
     renderer.root.add(this.help);
+
+    this.pages = new BoxRenderable(renderer, {
+      position: 'absolute',
+      top: 2,
+      left: 2,
+      right: 2,
+      height: 5,
+      zIndex: 10,
+      visible: false,
+      border: true,
+      borderStyle: 'rounded',
+      borderColor: THEME.accentBg,
+      title: ' bookmarks and history · Esc to close ',
+      backgroundColor: THEME.barBg,
+    });
+    this.pagesText = new TextRenderable(renderer, { content: '', fg: THEME.barFg, paddingLeft: 1 });
+    this.pages.add(this.pagesText);
+    renderer.root.add(this.pages);
 
     renderer.keyInput.on('keypress', this.onKey);
     renderer.keyInput.on('paste', this.onPaste);
@@ -282,6 +309,7 @@ export class App {
 
   private onEvent(e: SessionEvent) {
     if (e.client === this.backend.client || ['snapshot', 'status', 'screenshot', 'tabs'].includes(e.cmd)) return;
+    if (e.summary.startsWith('listed the ')) return; // history, downloads: nothing on the page changed
     const who = e.client.startsWith('mcp') ? 'agent' : e.client;
     this.activity = e.client === 'page' ? e.summary : `${who}: ${e.summary}`;
     clearTimeout(this.activityTimer);
@@ -358,12 +386,14 @@ export class App {
       case 'url': {
         const address = value.trim();
         if (!address) break;
-        // Don't start a browser for a stray word (like a q meant to quit).
-        if (!looksLikeAddress(address)) {
-          this.openPrompt(prompt, value, `"${address}" isn't a web address; type one like en.wikipedia.org, or Esc to cancel`);
-          break;
+        if (looksLikeAddress(address)) {
+          void this.run('goto', { url: toUrl(address) }, { start: true });
+        } else if ([...address].length < 2) {
+          // Don't start a browser for a stray key (like a q meant to quit).
+          this.openPrompt(prompt, value, `"${address}" isn't a web address or a search; type an address, or words to search for`);
+        } else {
+          void this.run('goto', { url: searchUrl(address), search: address }, { start: true });
         }
-        void this.run('goto', { url: toUrl(address) }, { start: true });
         break;
       }
       case 'field':
@@ -438,6 +468,7 @@ export class App {
       this.help.visible = false;
       return;
     }
+    if (this.picker) return this.pickerKey(key);
     // Before the dialog keys, so a y here answers the quit question, not a page dialog.
     if (this.quitting !== 'no') return this.quitKey(key);
     if (this.dialog && this.dialogKey(key)) return;
@@ -521,9 +552,11 @@ export class App {
         return this.page.scrollToEnd('top');
       case 'end':
         return this.page.scrollToEnd('bottom');
+      case 'b':
+        if (key.shift) return void this.openPicker(); // B: bookmarks and history
+        return void this.run('back');
       case 'left':
       case 'backspace':
-      case 'b':
         return void this.run('back');
       case 'right':
       case 'f':
@@ -535,6 +568,8 @@ export class App {
         return void this.run('wait', { seconds: 2 });
       case 'v':
         return this.cycleGrid();
+      case 'a':
+        return this.bookmark();
       case 'o':
         return this.openPrompt({ kind: 'url', label: 'open' }, this.current?.url ?? '');
       case 'l':
@@ -562,6 +597,96 @@ export class App {
       const at = this.page.nextMatch(ch === 'n' ? 1 : -1);
       return this.say(`match ${at} of ${this.page.matchCount} · n next · N previous`, 'info');
     }
+  }
+
+  // ---- bookmarks and history ------------------------------------------------------
+
+  private bookmark() {
+    const p = this.current;
+    if (!p) return this.say('no page to bookmark', 'info');
+    if (addBookmark({ title: p.title || p.url, url: p.url })) this.say(`bookmarked "${p.title || p.url}" · B lists bookmarks`, 'ok');
+    else this.say('this page is already bookmarked · B lists bookmarks', 'info');
+  }
+
+  /** B: the bookmarks, then this tab's history (newest first), numbered to open with a number and Enter. */
+  private async openPicker() {
+    const items: PickItem[] = readBookmarks().map((b, i) => ({ kind: 'bookmark', n: i + 1, ...b }));
+    if (this.current) {
+      try {
+        const h = JSON.parse((await this.backend.request('history', { json: true })).text) as {
+          current: number;
+          entries: { url: string; title: string }[];
+        };
+        h.entries.forEach((e, i) => items.push({ kind: 'history', n: i + 1, title: e.title, url: e.url, current: i + 1 === h.current }));
+      } catch {
+        // an older session without history; bookmarks only
+      }
+    }
+    // Newest history first, after the bookmarks.
+    const bookmarks = items.filter((i) => i.kind === 'bookmark');
+    const history = items.filter((i) => i.kind === 'history').reverse();
+    this.picker = { items: [...bookmarks, ...history], digits: '' };
+    this.drawPicker();
+  }
+
+  private drawPicker() {
+    const p = this.picker;
+    if (!p) {
+      this.pages.visible = false;
+      return;
+    }
+    const width = Math.max(20, this.renderer.width - 8);
+    const line = (i: number, it: PickItem) => {
+      const mark = it.kind === 'history' && it.current ? '• ' : '  ';
+      const url = it.url.replace(/^https?:\/\//, '');
+      return fitText(`${String(i + 1).padStart(3)}  ${mark}${it.title || '(untitled)'}  ${url}`, width);
+    };
+    const nb = p.items.filter((i) => i.kind === 'bookmark').length;
+    const rows: string[] = [];
+    rows.push(nb ? 'bookmarks' : 'no bookmarks yet: a bookmarks the page you are on');
+    p.items.forEach((it, i) => {
+      if (i === nb) rows.push("this tab's history, newest first (• is this page)");
+      rows.push(line(i, it));
+    });
+    const max = Math.max(3, this.renderer.height - 8);
+    const shown = rows.length > max ? [...rows.slice(0, max - 1), `  … ${rows.length - max + 1} more`] : rows;
+    shown.push('', p.digits ? `open ${p.digits}▏ Enter opens · d deletes a bookmark · Esc closes` : 'a number, then Enter opens it (then d deletes a bookmark) · Esc closes');
+    this.pagesText.content = shown.join('\n');
+    this.pages.height = shown.length + 2;
+    this.pages.visible = true;
+  }
+
+  private pickerKey(key: KeyEvent) {
+    const p = this.picker!;
+    if (/^[0-9]$/.test(key.name)) p.digits += key.name;
+    else if (key.name === 'backspace') p.digits = p.digits.slice(0, -1);
+    else if (key.name === 'return' || key.name === 'd') {
+      const n = Number(p.digits);
+      const item = p.items[n - 1];
+      if (!item) {
+        p.digits = '';
+        this.say(n ? `there is no line ${n} in the list` : 'type the number of a line first', 'error');
+      } else if (key.name === 'd') {
+        if (item.kind !== 'bookmark') this.say('only bookmarks can be deleted', 'info');
+        else {
+          const gone = removeBookmark(item.n);
+          this.say(gone ? `deleted the bookmark "${gone.title}"` : 'that bookmark was already gone', 'ok');
+          return void this.openPicker(); // renumbered
+        }
+        p.digits = '';
+      } else {
+        this.closePicker();
+        if (item.kind === 'bookmark') void this.run('goto', { url: item.url }, { start: true });
+        else if (!item.current) void this.run('history', { n: item.n });
+        return;
+      }
+    } else return this.closePicker();
+    this.drawPicker();
+  }
+
+  private closePicker() {
+    this.picker = null;
+    this.drawPicker();
   }
 
   /** Say where a selected link goes, or what Enter does to a selected control, as a browser's status bar would. */
@@ -697,6 +822,7 @@ export class App {
     const label = this.current?.labels.find(([n]) => n === ref)?.[1] ?? `[${args.ref}]`;
     switch (cmd) {
       case 'goto':
+        if (args.search) return `searching for "${args.search}"`;
         return `opening ${String(args.url).replace(/^https?:\/\//, '')}`;
       case 'click':
         return `clicking ${label}`;
@@ -720,6 +846,8 @@ export class App {
         return `waiting ${args.seconds}s for the page`;
       case 'tab':
         return `switching to tab ${args.n}`;
+      case 'history':
+        return args.n === undefined ? 'reading the history' : `going to page ${args.n} of the history`;
       case 'dialog':
         return 'answering the dialog';
       case 'stop':

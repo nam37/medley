@@ -87,7 +87,9 @@ sweeps across the `medley` badge and the status line says what's happening.
 | h | hover over the selected ref (menus that open on hover) |
 | [ ] | previous or next tab; the top bar shows `tab 2/3` when there's more than one |
 | ↑ ↓ j k, Space PgDn PgUp, Home End | scroll; scrolling past the end scrolls the browser too, loading lazy content |
-| o, Ctrl+L | open an address |
+| o, Ctrl+L | open an address, or type words to search for them |
+| a | bookmark this page |
+| B | bookmarks and this tab's history: type a line's number, then Enter opens it (or d deletes a bookmark) |
 | ← b, → f | back, forward |
 | / then n N | find text, next or previous match |
 | : | run any session command, e.g. `press Escape`, `wait 2`, `select 6 High` |
@@ -126,6 +128,7 @@ the same.
 
 ```
 medley goto <url>                   open a page (starts the session if needed)
+medley search <words>               search the web and open the results
 medley snapshot [--diff] [--links]  print the current page, or only what changed since you last looked
 medley click <ref>
 medley type <ref> <text> [--submit] replace a field's text, optionally pressing Enter
@@ -136,6 +139,7 @@ medley scroll [down|up|top|bottom|<ref>]
 medley upload <ref> <file>...        choose files for a file field, as if picked in its dialog
 medley reload [--hard]              reload the page (--hard: bypass the cache)
 medley back | forward
+medley history [n]                  list this tab's pages, or go to the n-th
 medley downloads                    list what this session downloaded, and where
 medley tabs                         list open tabs
 medley tab <number>                 switch to a tab
@@ -161,6 +165,12 @@ apply when a session starts:
   A click or a `goto` that downloads a file waits for it (up to 30 seconds)
   and ends with a note saying where it was saved; `downloads` lists them all.
   A file never overwrites another: the second `report.csv` is `report (2).csv`.
+
+Searches (`search`, MCP `browser_search`, or words typed in the terminal UI's
+address prompt) go to Bing, which answers headless browsers; set
+`MEDLEY_SEARCH` to another engine's URL with `%s` where the words go.
+Bookmarks are kept in `~/.medley/bookmarks.json` (or `MEDLEY_BOOKMARKS`),
+shared by every session.
 
 If a session was started by an older copy of medley, commands it doesn't know
 fail with a hint to restart it (`medley stop`), and the terminal UI says so
@@ -207,7 +217,8 @@ After an action you get one of:
   Every request must carry a random token from `~/.medley/<name>.json`, which only
   your user can read. Commands run one at a time, and each one is announced on
   an event stream (`/events`) that the terminal UI follows. The session exits
-  on `stop`, when the browser closes, or after 30 idle minutes. Its log is
+  on `stop`, when the browser closes, or 30 minutes after its last command
+  (`MEDLEY_IDLE_MINUTES` changes that). Its log is
   `~/.medley/<name>.log`.
 - **Terminal UI** (`src/tui/`) is one more client. It asks for the page's
   lines with each command, wraps and draws only the visible rows in a custom
@@ -270,9 +281,11 @@ terminal cells, for looking at the grid modes without a terminal.
 `bun run test:tui` drives the terminal UI through OpenTUI's test renderer
 against a real session on `test/app.html`: keys, a field prompt, a simulated
 agent acting in the same session, reload, a file prompt, the working badge,
-a masked password prompt, a download, find, a command, a mouse click, back, a
-`confirm()`, a page that moves on by itself, and the help overlay. It prints
-each frame as it goes.
+a masked password prompt, a download, bookmarks and history, find, a command,
+a mouse click, back, a `confirm()`, a page that moves on by itself, the help
+overlay, and a search from the address prompt. It prints each frame as it goes.
+`bun run test:idle` starts a session that stops after 3 idle seconds and
+checks that a command keeps it going and that it then stops by itself.
 `bun run test:frames` serves a page on 127.0.0.1 that embeds a form from
 localhost (another site, so its own process), which embeds a widget from
 127.0.0.1 again, and checks reading, typing, a checkbox, a select and clicks
@@ -289,7 +302,7 @@ terminal pictures come from it.
 - There's no drag and drop.
 - Canvas and WebGL apps don't render.
 - Some sites block headless Chrome; `--headed` may help.
-- `--headed` and the 30-minute idle shutdown haven't been exercised yet.
+- `--headed` hasn't been exercised yet.
 - Advanced grid draws solid background colors and `<img>`, `<video>` and
   `<canvas>` pictures, but not CSS background images or gradients. Elements
   fixed to the window (chat buttons, cookie bars) appear where they sat at the

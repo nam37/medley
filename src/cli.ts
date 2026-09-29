@@ -15,6 +15,7 @@ and each action prints only what changed.
 
 session commands:
   goto <url>                      open a page (starts the session if needed)
+  search <words>                  search the web (Bing, or MEDLEY_SEARCH: a URL with %s for the words)
   snapshot [--diff]               print the current page (--diff: only what changed since you last looked)
   click <ref>
   type <ref> <text> [--submit]    replace a field's text (--submit: then press Enter)
@@ -25,6 +26,7 @@ session commands:
   upload <ref> <file>...          choose files for a file field, as if picked in its dialog
   reload [--hard]                 reload the page (--hard: bypass the cache)
   back, forward
+  history [n]                     list this tab's pages, or go to the n-th
   downloads                       list what this session downloaded, and where
   tabs                            list open tabs (links can open new ones)
   tab <number>                    switch to a tab

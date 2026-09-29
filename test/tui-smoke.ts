@@ -19,9 +19,13 @@ const SESSION = 'tui-smoke';
 const url = pathToFileURL(join(import.meta.dir, 'app.html')).href;
 const setup = await createTestRenderer({ width: 100, height: 24 });
 const { mockInput, mockMouse } = setup;
-// Downloads go to a scratch folder, not the real ~/Downloads/medley.
+// Downloads and bookmarks go to scratch places, not the real ones, and a
+// search goes to a local page instead of the web.
 const downloads = join(tmpdir(), 'medley-smoke-downloads');
 rmSync(downloads, { recursive: true, force: true });
+process.env.MEDLEY_BOOKMARKS = join(tmpdir(), 'medley-smoke-bookmarks.json');
+rmSync(process.env.MEDLEY_BOOKMARKS, { force: true });
+process.env.MEDLEY_SEARCH = `${pathToFileURL(join(import.meta.dir, 'fixture.html')).href}?q=%s`;
 const app = new App(setup.renderer, sessionBackend(SESSION, { downloads }));
 
 async function waitFor(s: Setup, what: string, test: (frame: string) => boolean, ms = 20000): Promise<string> {
@@ -122,6 +126,9 @@ try {
   const saved = join(downloads, 'report.csv');
   console.log(`\nthe download: ${existsSync(saved) ? `saved, ${readFileSync(saved, 'utf8').split('\n').length - 1} lines` : 'missing (bad)'}`);
 
+  await keys('a');
+  show('a bookmarks the page', await until('the bookmark', (f) => f.includes('bookmarked "Medley test app"')));
+
   mockInput.pressKey(':');
   await mockInput.typeText('scroll bottom');
   mockInput.pressEnter();
@@ -179,6 +186,13 @@ try {
   mockInput.pressEnter();
   show('the page went on by itself', await until('the new page', (f) => f.includes('Medley fixture') && f.includes('the page loaded')));
 
+  // B lists bookmarks and this tab's history; a number and Enter opens one.
+  await keys('B');
+  show('B lists bookmarks and history', await until('the list', (f) => /1 +Medley test app/.test(f) && f.includes("this tab's history")));
+  await keys('1');
+  mockInput.pressEnter();
+  show('1, Enter: the bookmark opens', await until('the bookmarked page', (f) => f.includes('# Todos') && !f.includes('bookmarks and history')));
+
   await keys('?');
   show('? shows the keys', await until('the help', (f) => f.includes('any key to close')));
   await keys('x');
@@ -207,16 +221,23 @@ const bare = await createTestRenderer({ width: 100, height: 8 });
 try {
   const idle = new App(bare.renderer, sessionBackend(EMPTY, {}));
   void idle.start();
-  show('no session: the address prompt opens', await waitFor(bare, 'the prompt', (f) => f.includes('Enter opens it')));
+  show('no session: the address prompt opens', await waitFor(bare, 'the prompt', (f) => f.includes('words to search for')));
   await bare.mockInput.typeText('q');
   bare.mockInput.pressEnter();
   show('q, Enter: refused', await waitFor(bare, 'the refusal', (f) => f.includes("isn't a web address")));
   console.log(`session started: ${readSessionInfo(EMPTY) ? 'yes (bad)' : 'no'}`);
-  bare.mockInput.pressEscape();
-  await Bun.sleep(100);
+
+  // Words that aren't an address are a search (here MEDLEY_SEARCH points at a local page).
+  bare.mockInput.pressBackspace();
+  await bare.mockInput.typeText('two words');
+  bare.mockInput.pressEnter();
+  show('words, Enter: a search', await waitFor(bare, 'the search', (f) => f.includes('Medley fixture')));
+  const at = await send(EMPTY, { cmd: 'status', client: 'test' });
+  console.log(`the search went to: ${at.includes('fixture.html?q=two+words') ? 'the search page, with the words' : `${at} (bad)`}`);
   bare.mockInput.pressKey('Q');
   await idle.closed;
-  console.log('Esc, Q quit at once');
+  console.log('Q quit at once');
 } finally {
   bare.renderer.destroy();
+  await send(EMPTY, { cmd: 'stop', client: 'test' }).catch(() => {});
 }

@@ -404,6 +404,17 @@ export class Page {
     await this.settle();
   }
 
+  /** This tab's history: its pages, oldest first, and which one is showing. */
+  async historyEntries(): Promise<{ current: number; entries: { id: number; url: string; title: string }[] }> {
+    const { currentIndex, entries } = await this.send('Page.getNavigationHistory');
+    return { current: currentIndex, entries: entries.map((e: any) => ({ id: e.id, url: e.url, title: e.title })) };
+  }
+
+  /** Go to an entry of this tab's history (see historyEntries). */
+  async historyGo(id: number) {
+    await this.send('Page.navigateToHistoryEntry', { entryId: id });
+  }
+
   /** Go back (-1) or forward (1) in history. False if there's nowhere to go. */
   async history(delta: -1 | 1): Promise<boolean> {
     const { currentIndex, entries } = await this.send('Page.getNavigationHistory');

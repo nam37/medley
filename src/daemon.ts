@@ -10,7 +10,8 @@ import { isAbsolute } from 'node:path';
 import { codeStamp, removeSessionInfo, writeSessionInfo, type Command, type SessionEvent } from './client.ts';
 import { Session } from './session.ts';
 
-const IDLE_MS = 30 * 60_000;
+// How long the session waits for a command before it stops (MEDLEY_IDLE_MINUTES, default 30).
+const IDLE_MS = (Number(process.env.MEDLEY_IDLE_MINUTES) || 30) * 60_000;
 const HEARTBEAT_MS = 20_000; // keeps idle event streams open
 
 const argv = process.argv.slice(2);
@@ -62,6 +63,7 @@ const server = Bun.serve({
       return Response.json({ ok: false, error });
     } finally {
       if (command.cmd === 'stop') setTimeout(shutdown, 50);
+      else resetIdle(); // idle time counts from when the last command finished, not when it began
     }
   },
 });
@@ -102,12 +104,19 @@ function summarize({ cmd, args }: Command, text: string): string {
   if (cmd === 'screenshot') return 'took a screenshot';
   if (cmd === 'tabs') return 'listed the tabs';
   if (cmd === 'downloads') return 'listed the downloads';
+  if (cmd === 'history' && args?.n === undefined) return 'listed the history';
   return text.split('\n')[0];
 }
 
 function ref(value: unknown): number {
   const n = Number(value);
   if (!Number.isInteger(n) || n < 1) throw new Error(`"${value}" is not a ref; refs are the numbers in a snapshot`);
+  return n;
+}
+
+function entry(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1) throw new Error(`"${value}" is not a history entry; history lists them`);
   return n;
 }
 
@@ -173,6 +182,9 @@ async function dispatch({ cmd, args = {} }: Command, client: string): Promise<st
       return JSON.stringify(await session.screenshot()); // for the terminal UI's pictures
     case 'downloads':
       return session.downloadList();
+    case 'history':
+      if (args.n !== undefined) return session.historyGo(client, entry(args.n));
+      return args.json ? JSON.stringify(await session.historyList()) : session.historyText();
     case 'status':
       return `${await session.status()} · session "${name}", pid ${process.pid}${profile ? ` · profile ${profile}` : ''}`;
     case 'stop':

@@ -296,6 +296,41 @@ export class Session {
     });
   }
 
+  /** This tab's history, oldest first, numbered for `historyGo`. */
+  async historyList(): Promise<{ current: number; entries: { url: string; title: string }[] }> {
+    if (this.dialog) throw new Error(this.dialogText());
+    await this.ensureTab();
+    const { entries, currentId } = await this.visibleHistory();
+    return {
+      current: entries.findIndex((e) => e.id === currentId) + 1,
+      entries: entries.map(({ url, title }) => ({ url, title })),
+    };
+  }
+
+  /** This tab's history without the blank page every new tab starts on. */
+  private async visibleHistory() {
+    const { current, entries } = await this.page.historyEntries();
+    return { currentId: entries[current]?.id, entries: entries.filter((e) => e.url !== 'about:blank') };
+  }
+
+  async historyText(): Promise<string> {
+    const { current, entries } = await this.historyList();
+    return entries
+      .map((e, i) => `${i + 1}. ${e.title || '(untitled)'} · ${e.url}${i + 1 === current ? '  ← current' : ''}`)
+      .join('\n');
+  }
+
+  /** Go to the n-th page of this tab's history (as numbered by historyList). */
+  async historyGo(client: string, n: number): Promise<string> {
+    if (this.dialog) throw new Error(this.dialogText());
+    await this.ensureTab();
+    const { currentId, entries } = await this.visibleHistory();
+    const entry = entries[n - 1];
+    if (!entry) throw new Error(`there is no page ${n} in this tab's history; history lists ${entries.length}`);
+    if (entry.id === currentId) return this.report(client, `already on page ${n} of the history`);
+    return this.act(client, `went to page ${n} of the history`, () => this.page.historyGo(entry.id));
+  }
+
   wait(client: string, seconds: number): Promise<string> {
     return this.act(client, `waited ${seconds}s`, () => sleep(seconds * 1000));
   }

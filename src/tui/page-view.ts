@@ -57,6 +57,7 @@ const backdropFor = (fg: RGBA) => {
 // On the page canvas the text format's own markup (# before headings, ── dividers) is left out.
 const HEADING_MARK = /^#{1,6} /;
 const isDivider = (line: string) => line.startsWith('── ');
+const IMAGE_LABEL = /^\[img "((?:[^"\\]|\\.)*)"\]$/;
 const TABLE_RULE = RGBA.fromHex('#9aa0a8'); // a table's grid lines on the page canvas
 const TABLE_SEPARATOR = /^\|[-|]+\|$/; // the |---|---| under a header row
 
@@ -418,7 +419,7 @@ export class PageView extends Renderable {
 
   private layout() {
     const width = this.width - GUTTER;
-    const key = `${width}:${this.mode}`;
+    const key = `${width}:${this.mode}:${this.imageProtocol}`;
     if (key === this.layoutKey) return;
     this.layoutKey = key;
     this.columnGroups = 0;
@@ -513,7 +514,18 @@ export class PageView extends Renderable {
     const last: Rect[] = [[0, 0, v.width, 0], ...layers.map((l): Rect => [l.r[0], l.r[1], l.r[2], 0])];
     const lineLayer = new Int32Array(this.lines.length);
     const onPage = (r: Rect) => r[0] < v.width && r[0] + r[2] > 0 && r[1] + r[3] > 0;
-    const skip = (i: number) => !this.lines[i].trim() || (!this.fenced[i] && isDivider(this.lines[i]));
+    // A line that's only a picture's label, [img "…"], when the picture itself
+    // is drawn: the picture takes its place (its label, wrapped to the
+    // picture's width, would push everything below it down).
+    const within = (a: Rect, b: Rect) => a[0] >= b[0] - 2 && a[1] >= b[1] - 2 && a[0] + a[2] <= b[0] + b[2] + 2 && a[1] + a[3] <= b[1] + b[3] + 2;
+    const pictureLabel = (i: number) => {
+      const m = IMAGE_LABEL.exec(this.lines[i].trim());
+      if (!m) return false;
+      const alt = m[1].replace(/\\(.)/g, '$1').replace(/…$/, '');
+      const box = v.boxes[boxOf(i)]?.r;
+      return v.images.some((im) => im.alt.startsWith(alt) && (!box || within(im.r, box)));
+    };
+    const skip = (i: number) => !this.lines[i].trim() || (!this.fenced[i] && (isDivider(this.lines[i]) || pictureLabel(i)));
     for (let i = 0; i < this.lines.length; ) {
       if (skip(i)) {
         i++;
@@ -630,7 +642,8 @@ export class PageView extends Renderable {
             const cy = o.r[1] + o.r[3] / 2;
             return cx >= im.r[0] && cx <= im.r[0] + im.r[2] && cy >= im.r[1] && cy <= im.r[1] + im.r[3];
           });
-        const scale = background ? 1 : PICTURE_SCALE;
+        // Blocks are drawn a little smaller, so they don't crowd the text; real pixels at full size.
+        const scale = background || this.imageProtocol !== 'blocks' ? 1 : PICTURE_SCALE;
         const cols = Math.max(1, Math.round(fullCols * scale));
         const rowsHigh = Math.max(1, Math.round(fullRows * scale));
         const col = fullCol + Math.floor((fullCols - cols) / 2);

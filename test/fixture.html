@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Medley fixture</title>
+  <style>
+    body { font: 16px sans-serif; margin: 0; }
+    header { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; }
+    header nav ul { display: flex; gap: 16px; list-style: none; margin: 0; padding: 0; }
+    .cards { display: flex; gap: 16px; }
+    .card { border: 1px solid #ccc; padding: 8px; width: 200px; display: block; }
+    .toolbar { display: flex; gap: 8px; }
+    .toolbar > div { padding: 4px 8px; border: 1px solid #999; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    .fake-button { cursor: pointer; display: inline-block; padding: 4px 8px; background: #eee; }
+    .invisible { visibility: hidden; }
+    .tags span { display: inline-block; margin-right: 8px; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="Medley home" width="32" height="32"></a>
+    <nav aria-label="Primary">
+      <ul>
+        <li><a href="/docs">Docs</a></li>
+        <li><a href="/blog" aria-current="page">Blog</a></li>
+        <li><a href="/pricing">Pricing</a></li>
+      </ul>
+    </nav>
+    <button aria-expanded="false" aria-label="Open menu"><svg width="16" height="16"></svg></button>
+  </header>
+
+  <main>
+    <h1>Text browsers, <em>revisited</em></h1>
+    <p>This paragraph has an <a href="/inline">inline link</a>, some <strong>bold text</strong>,
+      and a <span class="sr-only">(screen-reader only note)</span> hidden note.</p>
+    <p style="display:none">This paragraph is display:none and must not appear.</p>
+    <p aria-hidden="true">This paragraph is aria-hidden and must not appear.</p>
+    <p class="invisible">Invisible text, <span style="visibility:visible">but this span is visible</span>.</p>
+
+    <h2>Row of cards</h2>
+    <div class="cards">
+      <a class="card" href="/a"><h3>Card A</h3><p>First card description.</p></a>
+      <a class="card" href="/b"><h3>Card B</h3><p>Second card description.</p></a>
+    </div>
+
+    <h2>Toolbar (flex divs)</h2>
+    <div class="toolbar"><div>Bold</div><div>Italic</div><div>Underline</div></div>
+
+    <h2>Sign in</h2>
+    <form aria-label="Sign in">
+      <label for="email">Email</label> <input id="email" type="email" value="ada@example.com">
+      <label>Password <input type="password" value="hunter2"></label>
+      <label><input type="checkbox" checked> Remember me</label>
+      <label>Country
+        <select><option>Canada</option><option selected>Japan</option></select>
+      </label>
+      <textarea placeholder="Anything else?"></textarea>
+      <button type="submit">Sign in</button>
+      <button type="button" disabled>Reset</button>
+    </form>
+
+    <h2>Data table</h2>
+    <table>
+      <caption>Release history</caption>
+      <thead><tr><th>Version</th><th>Date</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>0.1</td><td>2026-09-28</td><td>First <a href="/notes/0.1">prototype</a></td></tr>
+        <tr><td>0.2</td><td>TBD</td><td>Actions</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Layout table</h2>
+    <table role="presentation">
+      <tr><td>1.</td><td><a href="/story">A story title</a> (example.com)</td></tr>
+      <tr><td></td><td>42 points by <a href="/user">ada</a> | <a href="/comments">7 comments</a></td></tr>
+    </table>
+
+    <h2>Lists</h2>
+    <ol>
+      <li>First step</li>
+      <li>Second step
+        <ul><li>Nested detail</li><li>Another detail</li></ul>
+      </li>
+    </ol>
+    <div class="tags"><span>#tui</span><span>#agents</span><span>#browsers</span></div>
+
+    <h2>Custom elements</h2>
+    <x-greeting><span slot="name">Ada</span></x-greeting>
+    <div class="fake-button" onclick="void 0">Load more</div>
+    <details><summary>More info</summary><p>Hidden until expanded.</p></details>
+
+    <h2>Code</h2>
+    <pre>const page = await browser.newPage();
+await page.goto(url);</pre>
+    <blockquote>Quoted text lives here.</blockquote>
+  </main>
+
+  <dialog open aria-label="Cookie consent">
+    <p>We use cookies.</p>
+    <button>Accept</button> <button>Decline</button>
+  </dialog>
+
+  <footer><p>© 2026 Medley · <a href="/privacy">Privacy</a></p></footer>
+
+  <script>
+    customElements.define('x-greeting', class extends HTMLElement {
+      constructor() {
+        super();
+        this.attachShadow({ mode: 'open' }).innerHTML =
+          '<p>Hello, <slot name="name">stranger</slot>! <button>Wave</button></p>';
+      }
+    });
+    // Content added by script after load, like an SPA would.
+    const p = document.createElement('p');
+    p.textContent = 'Added by JavaScript.';
+    document.querySelector('main').appendChild(p);
+  </script>
+</body>
+</html>

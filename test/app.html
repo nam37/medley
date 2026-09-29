@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Medley test app</title>
+  <style>
+    body { font: 16px sans-serif; margin: 0; padding: 0 16px; }
+    nav { display: flex; gap: 16px; align-items: center; padding: 8px 0; }
+    #overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4); display: flex; align-items: center; justify-content: center; }
+    #overlay[hidden] { display: none; }
+    #overlay > div { background: white; padding: 16px; }
+    #more { margin-top: 1600px; }
+    .hover-menu .menu { display: none; }
+    .hover-menu:hover .menu { display: inline; }
+  </style>
+  <script>
+    // A hostile page trying to forge medley's ref table. Medley's scripts run
+    // in an isolated world, so they never see this.
+    window.__medley = { doc: 'forged', ids: new WeakMap(), els: new Map(), next: 1000 };
+  </script>
+</head>
+<body>
+  <header>
+    <nav aria-label="Main">
+      <a href="fixture.html">Fixture page</a>
+      <a href="fixture.html" target="_blank">Fixture in a new tab</a>
+      <button id="menu" aria-expanded="false">Menu</button>
+    </nav>
+    <ul id="menu-items" hidden>
+      <li><a href="#settings">Settings</a></li>
+      <li><a href="#logout">Log out</a></li>
+    </ul>
+  </header>
+
+  <main>
+    <h1>Todos</h1>
+    <form id="add">
+      <label>New todo <input name="todo" placeholder="What needs doing?"></label>
+      <button>Add</button>
+    </form>
+    <ul id="todos"><li>Write the prototype</li></ul>
+
+    <p>
+      <label>Priority <select id="priority"><option>Low</option><option>Medium</option><option>High</option></select></label>
+      <span id="priority-out">Priority is Low</span>
+    </p>
+
+    <p>
+      <button id="hello">Say hello</button>
+      <button id="clear">Clear all</button>
+      <button id="newsletter">Show newsletter</button>
+      <span id="count">Hello said 0 times</span>
+    </p>
+    <p><button id="covered">Buy now</button></p>
+    <p>
+      <span class="hover-menu"><button>Account</button> <span class="menu"><a href="#profile">Profile</a> <a href="#billing">Billing</a></span></span>
+      <button id="popup">Open a popup</button>
+    </p>
+
+    <section id="more"><p>Scroll down to load more.</p></section>
+  </main>
+
+  <div id="overlay" hidden>
+    <div role="dialog" aria-label="Newsletter">
+      <p>Subscribe to our newsletter?</p>
+      <button id="close-overlay">No thanks</button>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    $('menu').addEventListener('click', () => {
+      const open = $('menu').getAttribute('aria-expanded') !== 'true';
+      $('menu').setAttribute('aria-expanded', String(open));
+      $('menu-items').hidden = !open;
+    });
+
+    // Adds the todo after a short delay, like a request to a server would.
+    $('add').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const input = e.target.todo;
+      const text = input.value.trim();
+      if (!text) return;
+      setTimeout(() => {
+        const li = document.createElement('li');
+        li.textContent = text;
+        $('todos').appendChild(li);
+        input.value = '';
+      }, 300);
+    });
+
+    $('priority').addEventListener('change', (e) => {
+      $('priority-out').textContent = `Priority is ${e.target.value}`;
+    });
+
+    let hellos = 0;
+    $('hello').addEventListener('click', () => {
+      alert('Hello!');
+      $('count').textContent = `Hello said ${++hellos} times`;
+    });
+
+    $('clear').addEventListener('click', () => {
+      if (confirm('Delete all todos?')) $('todos').innerHTML = '';
+    });
+
+    $('newsletter').addEventListener('click', () => { $('overlay').hidden = false; });
+    $('close-overlay').addEventListener('click', () => { $('overlay').hidden = true; });
+    $('covered').addEventListener('click', () => { $('covered').textContent = 'Bought!'; });
+
+    // A tab opened by script, which can close itself.
+    $('popup').addEventListener('click', () => {
+      const w = window.open('', '_blank');
+      w.document.write('<title>Popup</title><h1>A popup</h1><button onclick="window.close()">Close this tab</button>');
+      w.document.close();
+    });
+
+    new IntersectionObserver((entries, observer) => {
+      if (!entries[0].isIntersecting) return;
+      observer.disconnect();
+      const list = document.createElement('ol');
+      for (let i = 1; i <= 3; i++) list.insertAdjacentHTML('beforeend', `<li>Lazy item ${i}</li>`);
+      $('more').appendChild(list);
+    }).observe($('more'));
+  </script>
+</body>
+</html>

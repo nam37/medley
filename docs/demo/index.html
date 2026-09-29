@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fernway Outfitters</title>
+  <meta name="description" content="A demo shop for trying medley, the text-mode web browser.">
+  <style>
+    :root {
+      --forest: #2c4a3f;
+      --moss: #4d7566;
+      --sand: #f5ecdd;
+      --paper: #fffaf2;
+      --ink: #1f2622;
+      --ember: #c05a2c;
+      --line: #e3d6c2;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font: 17px/1.55 Georgia, "Times New Roman", serif; }
+    a { color: var(--forest); }
+    .top { display: flex; align-items: center; gap: 32px; padding: 16px 48px; background: var(--forest); color: var(--sand); }
+    .brand { color: var(--sand); font: 700 22px/1 system-ui, sans-serif; letter-spacing: 0.04em; text-decoration: none; }
+    .top nav { display: flex; gap: 24px; margin-left: auto; align-items: center; font-family: system-ui, sans-serif; }
+    .top nav a { color: var(--sand); text-decoration: none; }
+    .top nav button { font: inherit; background: transparent; color: var(--sand); border: 1px solid #ffffff55; border-radius: 6px; padding: 4px 12px; cursor: pointer; }
+    #menu-items { margin: 0; padding: 8px 48px 12px; list-style: none; display: flex; gap: 24px; justify-content: flex-end; background: var(--moss); font-family: system-ui, sans-serif; }
+    #menu-items[hidden] { display: none; }
+    #menu-items a { color: var(--sand); }
+    .hero { position: relative; min-height: 360px; display: flex; align-items: center; padding: 48px; overflow: hidden; }
+    .hero img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    .hero .copy { position: relative; max-width: 460px; background: #fffaf2ee; padding: 28px 32px; border-radius: 10px; }
+    .hero h1 { margin: 0 0 8px; font-size: 44px; line-height: 1.1; color: var(--forest); }
+    .hero p { margin: 0 0 18px; }
+    .cta { display: inline-block; background: var(--ember); color: #fff; padding: 10px 20px; border-radius: 8px; text-decoration: none; font-family: system-ui, sans-serif; font-weight: 600; }
+    section { padding: 40px 48px; }
+    h2 { font-size: 30px; margin: 0 0 20px; color: var(--forest); }
+    .cards { display: flex; gap: 24px; }
+    .card { flex: 1; display: block; background: #fff; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; color: inherit; text-decoration: none; }
+    .card img { display: block; width: 100%; height: auto; }
+    .card .body { padding: 14px 18px 18px; }
+    .card h3 { margin: 0 0 4px; font-size: 21px; }
+    .card p { margin: 0 0 8px; color: #4a524d; }
+    .price { font: 700 17px system-ui, sans-serif; color: var(--ember); }
+    .guide { display: flex; gap: 40px; align-items: flex-start; }
+    table { border-collapse: collapse; background: #fff; border: 1px solid var(--line); flex: 2; }
+    caption { text-align: left; font-style: italic; padding-bottom: 8px; }
+    th, td { text-align: left; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+    th { background: var(--sand); font-family: system-ui, sans-serif; font-size: 15px; }
+    aside { flex: 1; background: var(--sand); padding: 18px 22px; border-radius: 12px; }
+    aside h3 { margin: 0 0 6px; }
+    .signup { background: var(--sand); }
+    form { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; font-family: system-ui, sans-serif; }
+    input[type=email] { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; width: 260px; }
+    form button { font: inherit; background: var(--forest); color: #fff; border: 0; border-radius: 6px; padding: 9px 18px; cursor: pointer; }
+    #thanks { font-family: system-ui, sans-serif; color: var(--forest); font-weight: 600; }
+    footer { display: flex; gap: 64px; padding: 32px 48px; background: var(--ink); color: #cfd6d2; font-family: system-ui, sans-serif; font-size: 15px; }
+    footer h4 { margin: 0 0 8px; color: #fff; }
+    footer ul { list-style: none; margin: 0; padding: 0; }
+    footer a { color: #cfd6d2; }
+    footer .note { margin-left: auto; max-width: 280px; }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="./">Fernway</a>
+    <nav aria-label="Main">
+      <a href="#gear">Gear</a>
+      <a href="#trails">Trails</a>
+      <button id="menu" aria-expanded="false">Menu</button>
+    </nav>
+  </header>
+  <ul id="menu-items" hidden>
+    <li><a href="#account">Account</a></li>
+    <li><a href="#orders">Orders</a></li>
+  </ul>
+
+  <main>
+    <section class="hero">
+      <img src="ridge.svg" alt="">
+      <div class="copy">
+        <h1>Pack light. Go far.</h1>
+        <p>Gear for weekend trips, tested on real trails and built to be repaired.</p>
+        <a class="cta" href="#gear">Shop the gear</a>
+      </div>
+    </section>
+
+    <section id="gear">
+      <h2>New this season</h2>
+      <div class="cards">
+        <a class="card" href="#ridge-2">
+          <img src="tent.svg" alt="A green two-person tent">
+          <div class="body"><h3>Ridge 2 tent</h3><p>Two people, 1.4 kg, up in three minutes.</p><span class="price">$289</span></div>
+        </a>
+        <a class="card" href="#ember">
+          <img src="lantern.svg" alt="A glowing camp lantern">
+          <div class="body"><h3>Ember lantern</h3><p>Warm light for 40 hours on one charge.</p><span class="price">$49</span></div>
+        </a>
+        <a class="card" href="#trailhead-28">
+          <img src="pack.svg" alt="A rust-red daypack">
+          <div class="body"><h3>Trailhead 28 pack</h3><p>A daypack with room for a jacket and lunch.</p><span class="price">$119</span></div>
+        </a>
+      </div>
+    </section>
+
+    <section id="trails">
+      <h2>Trail guide</h2>
+      <div class="guide">
+        <table>
+          <caption>Weekend loops near Fernway</caption>
+          <thead><tr><th>Trail</th><th>Distance</th><th>Climb</th><th>Best in</th></tr></thead>
+          <tbody>
+            <tr><td><a href="#cedar-falls">Cedar Falls</a></td><td>8 km</td><td>310 m</td><td>Spring</td></tr>
+            <tr><td><a href="#lookout-ridge">Lookout Ridge</a></td><td>14 km</td><td>720 m</td><td>Autumn</td></tr>
+            <tr><td><a href="#mirror-lake">Mirror Lake</a></td><td>11 km</td><td>240 m</td><td>Summer</td></tr>
+          </tbody>
+        </table>
+        <aside aria-label="Trail tip">
+          <h3>Tip</h3>
+          <p>Start Lookout Ridge before nine to beat the afternoon wind.</p>
+        </aside>
+      </div>
+    </section>
+
+    <section class="signup">
+      <h2>Trail notes</h2>
+      <form id="notes" aria-label="Trail notes">
+        <label>Email <input type="email" name="email" placeholder="you@example.com"></label>
+        <label><input type="checkbox" name="monthly" checked> Monthly, not weekly</label>
+        <button>Subscribe</button>
+        <span id="thanks" role="status"></span>
+      </form>
+    </section>
+  </main>
+
+  <footer>
+    <div><h4>Shop</h4><ul><li><a href="#gear">Gear</a></li><li><a href="#repairs">Repairs</a></li></ul></div>
+    <div><h4>Help</h4><ul><li><a href="#shipping">Shipping</a></li><li><a href="#returns">Returns</a></li></ul></div>
+    <p class="note">Fernway Outfitters is a made-up shop: a page for trying <a href="../">medley</a>, the text-mode web browser.</p>
+  </footer>
+
+  <script>
+    const menu = document.getElementById('menu');
+    menu.addEventListener('click', () => {
+      const open = menu.getAttribute('aria-expanded') !== 'true';
+      menu.setAttribute('aria-expanded', String(open));
+      document.getElementById('menu-items').hidden = !open;
+    });
+    document.getElementById('notes').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const email = e.target.email.value.trim();
+      const thanks = document.getElementById('thanks');
+      if (!email) thanks.textContent = 'Add an email address first.';
+      else if (confirm(`Send trail notes to ${email}?`)) thanks.textContent = `Thanks! Notes will go to ${email}.`;
+      else thanks.textContent = 'Nothing sent.';
+    });
+  </script>
+</body>
+</html>

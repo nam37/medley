@@ -1,0 +1,160 @@
+// Drives the terminal UI through OpenTUI's test renderer against a real
+// session on test/app.html, printing frames along the way.
+//
+//   bun test/tui-smoke.ts
+
+import { TextAttributes } from '@opentui/core';
+import { createTestRenderer } from '@opentui/core/testing';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { readSessionInfo, send } from '../src/client.ts';
+import { App } from '../src/tui/app.ts';
+import { sessionBackend } from '../src/tui/main.ts';
+
+type Setup = Awaited<ReturnType<typeof createTestRenderer>>;
+
+const SESSION = 'tui-smoke';
+const url = pathToFileURL(join(import.meta.dir, 'app.html')).href;
+const setup = await createTestRenderer({ width: 100, height: 24 });
+const { mockInput, mockMouse } = setup;
+const app = new App(setup.renderer, sessionBackend(SESSION, {}));
+
+async function waitFor(s: Setup, what: string, test: (frame: string) => boolean, ms = 20000): Promise<string> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    await s.renderOnce();
+    const frame = s.captureCharFrame();
+    if (test(frame)) return frame;
+    await Bun.sleep(50);
+  }
+  throw new Error(`timed out waiting for ${what}:\n${s.captureCharFrame()}`);
+}
+const until = (what: string, test: (frame: string) => boolean) => waitFor(setup, what, test);
+
+function show(title: string, frame: string) {
+  console.log(`\n=== ${title} ===\n${frame.split('\n').map((l) => l.trimEnd()).join('\n')}`);
+}
+
+const keys = async (...names: string[]) => {
+  for (const k of names) mockInput.pressKey(k);
+  await setup.renderOnce();
+};
+
+try {
+  void app.start(url);
+  show('opened the page', await until('the page', (f) => f.includes('# Todos')));
+
+  await keys('\t', '\t', '\t');
+  const inverted = setup
+    .captureSpans()
+    .lines.flatMap((l) => l.spans)
+    .filter((s) => s.attributes & TextAttributes.INVERSE)
+    .map((s) => s.text)
+    .join('');
+  console.log(`\nselected after Tab x3 (drawn inverted): ${inverted}`);
+  mockInput.pressEnter();
+  show('Tab x3, Enter: the menu opens', await until('the menu', (f) => f.includes('Settings')));
+
+  await keys('4');
+  mockInput.pressEnter();
+  show('typed 4, Enter: a prompt for the field', await until('the prompt', (f) => f.includes('type into [4')));
+  await mockInput.typeText('Buy milk');
+  mockInput.pressEnter();
+  show('typed and submitted', await until('the new todo', (f) => f.includes('- Buy milk')));
+
+  // An agent acts in the same session; the UI follows along.
+  await send(SESSION, { cmd: 'snapshot', client: 'mcp-smoke' });
+  await send(SESSION, { cmd: 'click', args: { ref: 7 }, client: 'mcp-smoke' });
+  show('an agent clicked "Say hello"', await until('the agent', (f) => f.includes('Hello said 1') && f.includes('agent:')));
+
+  mockInput.pressKey(':');
+  await mockInput.typeText('scroll bottom');
+  mockInput.pressEnter();
+  show(':scroll bottom loads lazy items', await until('lazy items', (f) => f.includes('Lazy item 3')));
+
+  mockInput.pressKey('/');
+  await mockInput.typeText('lazy');
+  mockInput.pressEnter();
+  show('/lazy finds matches', await until('matches', (f) => f.includes('of 3')));
+
+  mockInput.pressEscape(); // clear the find
+  await Bun.sleep(100); // a lone Esc waits briefly in case it starts an escape sequence
+  const frame = await until('the find to clear', (f) => !f.includes('match 1 of 3'));
+  const row = frame.split('\n').findIndex((l) => l.includes('[1]Fixture page'));
+  await mockMouse.click(frame.split('\n')[row].indexOf('[1]') + 4, row);
+  show('clicked [1] with the mouse', await until('the fixture page', (f) => f.includes('Medley fixture')));
+
+  await keys('v');
+  show('v: partial grid puts the cards side by side', await until('columns', (f) => /Card A\s+│ ### \[8\]Card B/.test(f)));
+  await keys('v');
+  const advanced = await until('advanced grid', (f) => f.includes('advanced grid'));
+  const cardRow = advanced.split('\n').findIndex((l) => l.includes('[8]Card B'));
+  await mockMouse.click(advanced.split('\n')[cardRow].indexOf('[8]') + 4, cardRow);
+  await until('Card B to open', (f) => f.includes("couldn’t be accessed"));
+  console.log('\nclicked [8]Card B in the right-hand column: it opened');
+  await keys('v');
+  await until('no grid', (f) => f.includes('no grid'));
+
+  await keys('b');
+  await until('the fixture again', (f) => f.includes('Medley fixture'));
+  await keys('b');
+  await until('the app again', (f) => f.includes('# Todos'));
+  await keys('8');
+  mockInput.pressEnter();
+  show('"Clear all" opens a confirm()', await until('the dialog', (f) => f.includes('the page asks (confirm)')));
+  await keys('y');
+  show('y accepts it', await until('todos cleared', (f) => f.includes('accepted the confirm')));
+
+  mockInput.pressKey(':');
+  await mockInput.typeText('hover 11');
+  mockInput.pressEnter();
+  show(':hover 11 opens a menu that shows on hover', await until('the hover menu', (f) => f.includes('Profile')));
+
+  await keys('2');
+  mockInput.pressEnter();
+  show('2, Enter: a link that opens a new tab', await until('the new tab', (f) => f.includes('Medley fixture') && f.includes('tab 2/2')));
+  await keys('[');
+  await until('tab 1 again', (f) => f.includes('tab 1/2') && f.includes('Todos'));
+  console.log('\n[ went back to tab 1');
+
+  await keys('?');
+  show('? shows the keys', await until('the help', (f) => f.includes('any key to close')));
+  await keys('x');
+  await until('the help to close', (f) => !f.includes('any key to close'));
+
+  await keys('q');
+  show('q asks first', await until('the question', (f) => f.includes('Quit medley?')));
+  await keys('n');
+  await until('the question to go', (f) => !f.includes('Quit medley?'));
+  await keys('q', 'y');
+  show('y asks about the session', await until('the session question', (f) => f.includes('Keep the browser session')));
+  await keys('n');
+  await app.closed;
+  // The session answers "stop" first and removes its file a moment later.
+  for (let i = 0; i < 40 && readSessionInfo(SESSION); i++) await Bun.sleep(50);
+  console.log(`\nn stayed; q, y, n quit and stopped the session: ${readSessionInfo(SESSION) ? 'still running (bad)' : 'stopped'}`);
+} finally {
+  setup.renderer.destroy();
+  await send(SESSION, { cmd: 'stop', client: 'test' }).catch(() => {});
+}
+
+// With no session running, the address prompt opens by itself. A q typed
+// there (meant to quit) must not start a browser for "https://q".
+const EMPTY = 'tui-smoke-none';
+const bare = await createTestRenderer({ width: 100, height: 8 });
+try {
+  const idle = new App(bare.renderer, sessionBackend(EMPTY, {}));
+  void idle.start();
+  show('no session: the address prompt opens', await waitFor(bare, 'the prompt', (f) => f.includes('Enter opens it')));
+  await bare.mockInput.typeText('q');
+  bare.mockInput.pressEnter();
+  show('q, Enter: refused', await waitFor(bare, 'the refusal', (f) => f.includes("isn't a web address")));
+  console.log(`session started: ${readSessionInfo(EMPTY) ? 'yes (bad)' : 'no'}`);
+  bare.mockInput.pressEscape();
+  await Bun.sleep(100);
+  bare.mockInput.pressKey('Q');
+  await idle.closed;
+  console.log('Esc, Q quit at once');
+} finally {
+  bare.renderer.destroy();
+}

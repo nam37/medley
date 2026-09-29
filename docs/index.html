@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>medley — a text-mode web browser for humans and agents</title>
+  <meta name="description" content="medley turns any web page into compact text with every control numbered. Act by number, see only what changed, and drive the same browser session with your agent.">
+  <meta property="og:title" content="medley">
+  <meta property="og:description" content="A text-mode web browser for humans and agents.">
+  <meta property="og:image" content="https://nam37.github.io/medley/assets/social.png">
+  <meta property="og:url" content="https://nam37.github.io/medley/">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="assets/favicon.png" type="image/png" sizes="64x64">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Hanken+Grotesk:wght@500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --paper: #fbfaf5;
+      --paper-2: #f3f1e8;
+      --ink: #1f2a33;
+      --ink-2: #4a5560;
+      --muted: rgba(31, 42, 51, 0.5);
+      --rule: rgba(31, 42, 51, 0.18);
+      --green: #0a7d5e;
+      --green-tint: rgba(10, 125, 94, 0.12);
+      --amber: #a86a12;
+      --term: #1e1e1e;
+      --grid: rgba(10, 125, 94, 0.07);
+      --mono: "DM Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+      --serif: "Newsreader", Georgia, serif;
+      --label: "Hanken Grotesk", system-ui, sans-serif;
+      --wide: 1120px;
+      --gutter: 16px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background-color: var(--paper);
+      background-image:
+        linear-gradient(var(--grid) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+      background-size: 24px 24px;
+      color: var(--ink);
+      font: 400 19px/1.55 var(--serif);
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    a { color: var(--green); text-underline-offset: 3px; }
+    a:hover { color: var(--ink); }
+    :focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
+    .wrap { width: min(var(--wide), 100% - 2 * var(--gutter)); margin-inline: auto; }
+    @media (min-width: 700px) { :root { --gutter: 32px; } }
+
+    /* header: the nav is written the way medley prints links */
+    header.top { border-bottom: 2px solid var(--ink); background: var(--paper); position: relative; z-index: 2; }
+    header.top .wrap { display: flex; align-items: center; gap: 24px; min-height: 68px; flex-wrap: wrap; padding-block: 10px; }
+    .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; }
+    .brand img.mark { width: 34px; height: 34px; }
+    .brand img.word { height: 26px; width: auto; }
+    nav.refs { margin-left: auto; display: flex; gap: 6px 20px; flex-wrap: wrap; font: 400 15px/1.2 var(--mono); }
+    nav.refs a { color: var(--ink); text-decoration: none; white-space: nowrap; }
+    nav.refs a b { color: var(--green); font-weight: 500; }
+    nav.refs a span { text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: 4px; }
+    nav.refs a:hover span { text-decoration-color: var(--green); }
+
+    /* hero */
+    .hero { padding: 56px 0 28px; }
+    .kicker { font: 600 13px/1 var(--label); letter-spacing: 0.16em; text-transform: uppercase; color: var(--green); margin: 0 0 18px; }
+    h1 { font: 400 clamp(40px, 7vw, 80px)/0.98 var(--serif); letter-spacing: -0.02em; margin: 0; max-width: 15ch; }
+    h1 em { font-style: italic; color: var(--green); }
+    .lede { font-size: clamp(19px, 2.2vw, 22px); line-height: 1.5; color: var(--ink-2); max-width: 40em; margin: 22px 0 28px; }
+    .actions { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    .btn { display: inline-flex; align-items: center; gap: 10px; font: 500 16px/1 var(--mono); padding: 13px 18px; border: 2px solid var(--ink); border-radius: 8px; text-decoration: none; color: var(--ink); background: var(--paper); }
+    .btn.primary { background: var(--ink); color: var(--paper); }
+    .btn:hover { background: var(--green); border-color: var(--green); color: var(--paper); }
+    .btn .n { color: var(--green); }
+    .btn.primary .n, .btn:hover .n { color: #9fd9c4; }
+
+    .film { margin: 44px 0 0; border: 2px solid var(--ink); border-radius: 14px; overflow: hidden; background: var(--paper); aspect-ratio: 16 / 9; position: relative; }
+    .film video, .film img { display: block; width: 100%; height: 100%; object-fit: cover; }
+    .film figcaption { position: absolute; right: 12px; bottom: 10px; font: 400 12px/1 var(--mono); color: var(--muted); }
+
+    /* sections, headed like medley's landmarks */
+    section.band { padding: 64px 0 24px; }
+    .landmark { display: flex; align-items: center; gap: 14px; font: 400 15px/1 var(--mono); color: var(--muted); margin: 0 0 26px; }
+    .landmark::before { content: ""; width: 28px; border-top: 2px solid var(--ink); }
+    .landmark::after { content: ""; flex: 1; border-top: 2px solid var(--ink); }
+    h2 { font: 400 clamp(30px, 4.4vw, 46px)/1.05 var(--serif); letter-spacing: -0.015em; margin: 0 0 14px; max-width: 22ch; }
+    .prose { max-width: 38em; color: var(--ink-2); margin: 0 0 28px; }
+    .prose code, li code, td code { font: 400 0.84em var(--mono); background: var(--paper-2); padding: 1px 5px; border-radius: 4px; color: var(--ink); }
+
+    .pair { display: grid; gap: 20px; align-items: start; }
+    @media (min-width: 900px) { .pair { grid-template-columns: 1fr 1fr; } }
+    .pane { border: 2px solid var(--ink); border-radius: 14px; overflow: hidden; background: #fff; min-width: 0; }
+    .pane .bar { display: flex; justify-content: space-between; gap: 12px; padding: 9px 14px; border-bottom: 1px solid var(--rule); font: 600 12px/1.2 var(--label); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-2); }
+    .pane .bar a { font: 400 13px/1.2 var(--mono); letter-spacing: 0; text-transform: none; }
+    .pane img { display: block; width: 100%; height: auto; }
+
+    pre.medley { margin: 0; padding: 16px 18px; font: 400 14px/1.6 var(--mono); color: var(--ink); overflow: auto; white-space: pre; tab-size: 2; }
+    pre.medley.tall { max-height: 520px; }
+    pre.medley .tt { font-weight: 500; }
+    pre.medley .dim, pre.medley .lm { color: var(--muted); }
+    pre.medley .hd { font-weight: 500; color: var(--ink); }
+    pre.medley .ref { color: var(--green); font-weight: 500; }
+    pre.medley .lt { text-decoration: underline; text-decoration-color: rgba(10, 125, 94, 0.45); text-underline-offset: 3px; }
+    pre.medley .ctl { color: var(--amber); font-weight: 500; }
+    pre.medley .prompt { color: var(--muted); user-select: none; }
+    pre.medley .cmd { font-weight: 500; }
+    pre.medley .del { color: var(--muted); text-decoration: line-through; text-decoration-color: rgba(31, 42, 51, 0.35); }
+    pre.medley .add { display: inline-block; min-width: 100%; background: rgba(10, 125, 94, 0.08); box-shadow: inset 4px 0 0 var(--green); padding-left: 2px; }
+    .note { font: 400 14px/1.5 var(--mono); color: var(--muted); margin: 14px 0 0; }
+
+    /* two drivers */
+    .steps { display: grid; gap: 18px; counter-reset: step; }
+    @media (min-width: 900px) { .steps { grid-template-columns: repeat(3, 1fr); } }
+    .step { min-width: 0; }
+    .step .shot { border: 2px solid var(--ink); border-radius: 10px; overflow: hidden; background: var(--term); }
+    .step .shot img { display: block; width: 100%; height: auto; }
+    .step h3 { font: 500 20px/1.25 var(--serif); margin: 14px 0 4px; }
+    .step h3::before { counter-increment: step; content: counter(step) ". "; color: var(--green); font-family: var(--mono); font-size: 16px; }
+    .step p { margin: 0; font-size: 17px; color: var(--ink-2); }
+    .who { font: 500 12px/1 var(--mono); padding: 3px 7px; border-radius: 4px; color: var(--paper); vertical-align: 2px; }
+    .who.agent { background: var(--green); }
+    .who.you { background: var(--ink); }
+
+    /* the terminal with its grid modes */
+    .term { border: 2px solid var(--ink); border-radius: 14px; background: var(--term); padding: 10px; }
+    .term .screen { position: relative; aspect-ratio: 1726 / 1014; overflow: hidden; border-radius: 4px; }
+    .term .screen img { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; transition: opacity 0.25s ease; }
+    .term .screen img.on { opacity: 1; }
+    @media (prefers-reduced-motion: reduce) { .term .screen img { transition: none; } }
+    .modes { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-top: 16px; font: 400 15px/1 var(--mono); }
+    .modes button { font: inherit; color: var(--ink); background: var(--paper); border: 2px solid var(--ink); border-radius: 8px; padding: 9px 13px; cursor: pointer; }
+    .modes button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+    .modes button:hover { border-color: var(--green); }
+    kbd { font: 500 14px/1 var(--mono); display: inline-block; min-width: 1.9em; text-align: center; padding: 5px 7px 4px; border: 2px solid var(--ink); border-bottom-width: 4px; border-radius: 6px; background: #fff; }
+    .modes .hint { color: var(--muted); }
+    .mode-note { color: var(--ink-2); margin: 14px 0 0; min-height: 3.1em; max-width: 46em; }
+
+    /* under the hood */
+    .facts { display: grid; gap: 0; border-top: 2px solid var(--ink); }
+    @media (min-width: 760px) { .facts { grid-template-columns: 1fr 1fr; column-gap: 40px; } }
+    .fact { padding: 18px 0 20px; border-bottom: 1px solid var(--rule); }
+    .fact h3 { font: 500 21px/1.25 var(--serif); margin: 0 0 6px; }
+    .fact h3 b { font: 500 15px var(--mono); color: var(--green); margin-right: 8px; }
+    .fact p { margin: 0; font-size: 17px; color: var(--ink-2); }
+
+    /* install */
+    .code { position: relative; border: 2px solid var(--ink); border-radius: 12px; background: #fff; }
+    .code pre.medley { padding-right: 90px; }
+    .copy { position: absolute; top: 10px; right: 10px; font: 500 13px/1 var(--mono); color: var(--ink); background: var(--paper); border: 2px solid var(--ink); border-radius: 6px; padding: 7px 10px; cursor: pointer; }
+    .copy:hover { background: var(--green); border-color: var(--green); color: var(--paper); }
+    .needs { margin: 0 0 20px; padding-left: 1.1em; color: var(--ink-2); }
+    .needs li { margin: 4px 0; }
+
+    footer.bottom { margin-top: 72px; border-top: 2px solid var(--ink); padding: 26px 0 48px; font: 400 14px/1.7 var(--mono); color: var(--ink-2); }
+    footer.bottom .wrap { display: flex; flex-wrap: wrap; gap: 8px 28px; align-items: center; }
+    footer.bottom .fine { flex-basis: 100%; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <a class="brand" href="./" aria-label="medley home">
+        <img class="mark" src="assets/favicon.svg" alt="" width="34" height="34">
+        <img class="word" src="assets/wordmark.png" alt="medley" width="130" height="26">
+      </a>
+      <nav class="refs" aria-label="Main">
+        <a href="#agents"><b>[1]</b><span>What agents see</span></a>
+        <a href="#terminal"><b>[2]</b><span>Terminal UI</span></a>
+        <a href="#install"><b>[3]</b><span>Install</span></a>
+        <a href="https://github.com/nam37/medley"><b>[4]</b><span>GitHub</span></a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="wrap">
+        <p class="kicker">A text-mode web browser for humans and agents</p>
+        <h1>Any web page, as text <em>you and your agent</em> can click.</h1>
+        <p class="lede">medley turns pages into compact text with every link, button and field numbered. You act by number, and each action prints only what changed. People browse in a terminal UI, agents through MCP or the command line, and both can share one browser session.</p>
+        <div class="actions">
+          <a class="btn primary" href="#install"><span class="n">[5]</span>Get started</a>
+          <a class="btn" href="demo/"><span class="n">[6]</span>Try it on the demo shop</a>
+          <a class="btn" href="https://github.com/nam37/medley"><span class="n">[7]</span>Source on GitHub</a>
+        </div>
+        <figure class="film">
+          <video id="film" autoplay muted loop playsinline preload="metadata" poster="assets/medley-poster.jpg" aria-label="A 30-second animation: a web page folds into medley's text, a click returns only the diff, an agent and a person share one session, and the terminal UI cycles its grid modes.">
+            <source src="assets/medley.webm" type="video/webm">
+            <source src="assets/medley.mp4" type="video/mp4">
+          </video>
+          <figcaption>30 s · silent</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="band" id="agents">
+      <div class="wrap">
+        <p class="landmark">main › what an agent sees</p>
+        <h2>The page, minus everything that isn't content.</h2>
+        <p class="prose">Headings, landmarks, lists, tables and alt text stay; layout and styling go. Every control gets a number that stays the same for as long as the page lives, so an agent can say <code>click 4</code> instead of guessing at selectors or pixels.</p>
+        <div class="pair">
+          <div class="pane">
+            <div class="bar"><span>The page</span><a href="demo/">nam37.github.io/medley/demo/</a></div>
+            <img src="assets/demo-page.png" alt="The Fernway Outfitters demo shop: a green top bar with Gear, Trails and a Menu button, a hero with mountains and the headline Pack light. Go far., and three product cards." width="1440" height="900" loading="lazy">
+          </div>
+          <div class="pane">
+            <div class="bar"><span>What medley prints</span><span>19 refs</span></div>
+<pre class="medley tall" tabindex="0" aria-label="medley's text snapshot of the demo page"><span class="prompt">$ </span><span class="cmd">medley goto nam37.github.io/medley/demo/</span>
+<span class="tt">Fernway Outfitters</span>
+<span class="dim">https://nam37.github.io/medley/demo/ · 19 refs · viewport 0–900 of 1671px</span>
+
+<span class="lm">── header ──</span>
+<span class="ref">[1]</span><span class="lt">Fernway</span>
+
+<span class="lm">── nav "Main" ──</span>
+<span class="ref">[2]</span><span class="lt">Gear</span>  <span class="ref">[3]</span><span class="lt">Trails</span>  <span class="ctl">[4 button "Menu" collapsed]</span>
+
+<span class="lm">── main ──</span>
+
+<span class="hd"># Pack light. Go far.</span>
+Gear for weekend trips, tested on real trails and built to be repaired.
+<span class="ref">[5]</span><span class="lt">Shop the gear</span>
+
+<span class="hd">## New this season</span>
+<span class="ref">[6]</span><span class="lt">[img "A green two-person tent"]</span>
+
+<span class="hd">### Ridge 2 tent</span>
+Two people, 1.4 kg, up in three minutes.
+$289
+<span class="ref">[7]</span><span class="lt">[img "A glowing camp lantern"]</span>
+
+<span class="hd">### Ember lantern</span>
+Warm light for 40 hours on one charge.
+$49
+<span class="ref">[8]</span><span class="lt">[img "A rust-red daypack"]</span>
+
+<span class="hd">### Trailhead 28 pack</span>
+A daypack with room for a jacket and lunch.
+$119
+
+<span class="hd">## Trail guide</span>
+
+Table: Weekend loops near Fernway
+| Trail             | Distance | Climb | Best in |
+|-------------------|----------|-------|---------|
+| <span class="ref">[9]</span><span class="lt">Cedar Falls</span>    | 8 km     | 310 m | Spring  |
+| <span class="ref">[10]</span><span class="lt">Lookout Ridge</span> | 14 km    | 720 m | Autumn  |
+| <span class="ref">[11]</span><span class="lt">Mirror Lake</span>   | 11 km    | 240 m | Summer  |
+
+<span class="lm">── aside "Trail tip" ──</span>
+
+<span class="hd">### Tip</span>
+Start Lookout Ridge before nine to beat the afternoon wind.
+
+<span class="hd">## Trail notes</span>
+
+<span class="lm">── form "Trail notes" ──</span>
+<span class="ctl">[12 textbox "Email"]</span>  <span class="ctl">[13 checkbox "Monthly, not weekly" checked]</span>  <span class="ctl">[14 button "Subscribe"]</span>
+
+<span class="lm">── footer ──</span>
+
+<span class="hd">#### Shop</span>
+- <span class="ref">[15]</span><span class="lt">Gear</span>
+- <span class="ref">[16]</span><span class="lt">Repairs</span>
+
+<span class="hd">#### Help</span>
+- <span class="ref">[17]</span><span class="lt">Shipping</span>
+- <span class="ref">[18]</span><span class="lt">Returns</span>
+Fernway Outfitters is a made-up shop: a page for trying <span class="ref">[19]</span><span class="lt">medley</span>, the text-mode web browser.</pre>
+          </div>
+        </div>
+        <p class="note">The demo page is 8.1 KB of HTML; medley's text for it is 1.4 KB.</p>
+      </div>
+    </section>
+
+    <section class="band" id="diffs">
+      <div class="wrap">
+        <p class="landmark">main › act by number</p>
+        <h2>Each action answers with only what changed.</h2>
+        <p class="prose">Click, type, select, press a key, hover or scroll, naming the element by its number. medley waits for the page to settle, then prints a diff grouped under the landmark and heading it happened in, or the whole new page when you navigated. An agent reads two lines instead of the whole page again.</p>
+        <div class="pane">
+<pre class="medley" tabindex="0" aria-label="The result of clicking ref 4"><span class="prompt">$ </span><span class="cmd">medley click 4</span>
+<span class="tt">clicked [4 button "Menu"] · +2 -1 lines</span>
+<span class="dim">@@ nav "Main" @@</span>
+<span class="dim">  ── nav "Main" ──</span>
+<span class="del">- [2]Gear  [3]Trails  [4 button "Menu" collapsed]</span>
+<span class="add">+ <span class="ref">[2]</span><span class="lt">Gear</span>  <span class="ref">[3]</span><span class="lt">Trails</span>  <span class="ctl">[4 button "Menu" expanded]</span></span>
+<span class="add">+ <span class="ref">[20]</span><span class="lt">Account</span>  <span class="ref">[21]</span><span class="lt">Orders</span></span></pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" id="together">
+      <div class="wrap">
+        <p class="landmark">main › two drivers, one session</p>
+        <h2>Watch your agent browse, and take over when it matters.</h2>
+        <p class="prose">A background session owns the browser. The terminal UI, the command line and every MCP connection are clients of that one session, so you see what the agent does as it happens, and a <code>confirm()</code> can wait for a person to answer it.</p>
+        <div class="steps">
+          <div class="step">
+            <div class="shot"><img src="assets/tui-agent-typed.png" alt="medley's terminal UI on the demo page's form; the status line says, in purple, agent: typed into [12 textbox Email]." width="1726" height="1014" loading="lazy"></div>
+            <h3>The agent fills the form</h3>
+            <p><span class="who agent">agent</span> <code>type 12 sam@example.com</code>. Your terminal UI follows along and marks the line that changed.</p>
+          </div>
+          <div class="step">
+            <div class="shot"><img src="assets/tui-confirm.png" alt="The status line reads: the page asks (confirm): Send trail notes to sam@example.com? with the hint y accept, n dismiss." width="1726" height="1014" loading="lazy"></div>
+            <h3>The page asks to confirm</h3>
+            <p><span class="who agent">agent</span> <code>click 14</code> opens a <code>confirm()</code>. The page is blocked until someone answers it.</p>
+          </div>
+          <div class="step">
+            <div class="shot"><img src="assets/tui-accepted.png" alt="After pressing y: accepted the confirm, and the page now shows Thanks! Notes will go to sam@example.com." width="1726" height="1014" loading="lazy"></div>
+            <h3>You answer it</h3>
+            <p><span class="who you">you</span> press <kbd>y</kbd> in the terminal UI (or run <code>dialog accept</code>), and the page carries on.</p>
+          </div>
+        </div>
+        <div class="code" style="margin-top: 28px">
+<pre class="medley" aria-label="Add medley to Claude Code as an MCP server"><span class="prompt">$ </span>claude mcp add medley -- bun /path/to/medley/src/cli.ts mcp</pre>
+          <button class="copy" type="button" data-copy="claude mcp add medley -- bun /path/to/medley/src/cli.ts mcp">copy</button>
+        </div>
+        <p class="note">The MCP tools (browser_goto, browser_click, browser_type, …) talk to the same session as the command line and the terminal UI.</p>
+      </div>
+    </section>
+
+    <section class="band" id="terminal">
+      <div class="wrap">
+        <p class="landmark">main › the terminal UI</p>
+        <h2>Browse it yourself, with the page's own layout.</h2>
+        <p class="prose">A full-screen terminal UI for people: Tab through refs, Enter to open, <kbd>/</kbd> to find, <kbd>[</kbd> <kbd>]</kbd> for tabs. Press <kbd>v</kbd> to cycle how the page is drawn. The text, the refs and the keys stay the same in every mode.</p>
+        <div class="term">
+          <div class="screen" id="screen">
+            <img class="on" data-mode="none" src="assets/tui-none.png" alt="No grid: the page as medley's plain text, with colored refs." width="1726" height="1014">
+            <img data-mode="partial" src="assets/tui-partial.png" alt="Partial grid: the three product cards side by side in columns, and the trail table beside its tip." width="1726" height="1014" loading="lazy">
+            <img data-mode="advanced" src="assets/tui-advanced.png" alt="Advanced grid: the page as laid out, with its green top bar and the mountain picture drawn in half-block characters." width="1726" height="1014" loading="lazy">
+          </div>
+        </div>
+        <div class="modes" role="group" aria-label="Grid mode">
+          <button type="button" data-mode="none" aria-pressed="true">no grid</button>
+          <button type="button" data-mode="partial" aria-pressed="false">partial grid</button>
+          <button type="button" data-mode="advanced" aria-pressed="false">advanced grid</button>
+          <span class="hint">or press <kbd>v</kbd></span>
+        </div>
+        <p class="mode-note" id="mode-note" aria-live="polite">No grid: the text exactly as an agent gets it, with refs in color and links underlined.</p>
+      </div>
+    </section>
+
+    <section class="band" id="how">
+      <div class="wrap">
+        <p class="landmark">main › under the hood</p>
+        <h2>Built on the real browser.</h2>
+        <p class="prose">medley drives headless Chrome or Edge over the DevTools protocol. Its only dependency is <a href="https://opentui.com">OpenTUI</a>, for the terminal UI.</p>
+        <div class="facts">
+          <div class="fact"><h3><b>01</b>Refs that stay put</h3><p>An element keeps its number for as long as the document lives, so diffs show only real changes. Refs from before a navigation are refused instead of hitting whatever has that number now.</p></div>
+          <div class="fact"><h3><b>02</b>Real clicks and typing</h3><p>Clicks are mouse events at a point hit-testing confirms lands on the element. If something covers it, the error names what. Typing produces ordinary input events.</p></div>
+          <div class="fact"><h3><b>03</b>An isolated world</h3><p>medley's scripts share the page's DOM but not its JavaScript, like an extension's. A page can't see or forge the ref table to steer an agent.</p></div>
+          <div class="fact"><h3><b>04</b>What's actually rendered</h3><p>Extraction walks the rendered page, including open shadow roots and same-origin iframes. Hidden content is dropped, labels fold into their controls, and passwords are masked.</p></div>
+          <div class="fact"><h3><b>05</b>Waits for the page</h3><p>After each action it waits for any navigation, then for the network and the DOM to go quiet, before it looks.</p></div>
+          <div class="fact"><h3><b>06</b>Tabs and dialogs</h3><p>A link that opens a tab moves the session into it; when a tab closes, the session goes back to the one that opened it. Alerts are acknowledged; confirms and prompts wait for an answer.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" id="install">
+      <div class="wrap">
+        <p class="landmark">main › install</p>
+        <h2>Run it from a clone.</h2>
+        <ul class="needs">
+          <li><a href="https://bun.sh">Bun</a> 1.3 or later</li>
+          <li>Chrome or Edge (medley finds it, or set <code>MEDLEY_BROWSER</code> to its path)</li>
+        </ul>
+        <div class="code">
+<pre class="medley" aria-label="Install commands"><span class="prompt">$ </span>git clone https://github.com/nam37/medley.git
+<span class="prompt">$ </span>cd medley
+<span class="prompt">$ </span>bun install
+<span class="prompt">$ </span>bun src/cli.ts tui nam37.github.io/medley/demo/</pre>
+          <button class="copy" type="button" data-copy="git clone https://github.com/nam37/medley.git&#10;cd medley&#10;bun install&#10;bun src/cli.ts tui nam37.github.io/medley/demo/">copy</button>
+        </div>
+        <p class="prose" style="margin-top: 22px">Then <code>bun src/cli.ts goto &lt;url&gt;</code>, <code>snapshot</code>, <code>click &lt;ref&gt;</code> and friends from any shell, or <code>bun src/cli.ts mcp</code> for agents. The <a href="https://github.com/nam37/medley#readme">README</a> lists every command, key and option, and what doesn't work yet.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="bottom">
+    <div class="wrap">
+      <span>── footer ──</span>
+      <a href="https://github.com/nam37/medley">github.com/nam37/medley</a>
+      <a href="https://github.com/nam37/medley/blob/main/LICENSE">MIT license</a>
+      <a href="demo/">the demo shop</a>
+      <span class="fine">Fernway Outfitters is a made-up shop for trying medley.</span>
+    </div>
+  </footer>
+
+  <script>
+    // Grid modes: the buttons, or v, cycle the terminal's screen.
+    const modes = ['none', 'partial', 'advanced'];
+    const notes = {
+      none: 'No grid: the text exactly as an agent gets it, with refs in color and links underlined.',
+      partial: "Partial grid: blocks that sit side by side on the page become columns, like the product cards here, when each column gets at least 20 characters.",
+      advanced: "Advanced grid: the page as laid out, scaled to the terminal, in the page's own colors, with its pictures drawn in half-block characters.",
+    };
+    let current = 'none';
+    function show(mode) {
+      current = mode;
+      document.querySelectorAll('#screen img').forEach((img) => img.classList.toggle('on', img.dataset.mode === mode));
+      document.querySelectorAll('.modes button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === mode)));
+      document.getElementById('mode-note').textContent = notes[mode];
+    }
+    document.querySelectorAll('.modes button').forEach((b) => b.addEventListener('click', () => show(b.dataset.mode)));
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'v' || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.target.closest && e.target.closest('input, textarea, select, [contenteditable]')) return;
+      show(modes[(modes.indexOf(current) + 1) % modes.length]);
+    });
+
+    // Copy buttons.
+    document.querySelectorAll('.copy').forEach((b) =>
+      b.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(b.dataset.copy);
+          b.textContent = 'copied';
+        } catch {
+          b.textContent = 'select it';
+        }
+        setTimeout(() => (b.textContent = 'copy'), 1600);
+      }),
+    );
+
+    // Respect reduced motion: no autoplay, but controls to play it.
+    const film = document.getElementById('film');
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      film.removeAttribute('autoplay');
+      film.pause();
+      film.controls = true;
+    }
+  </script>
+</body>
+</html>

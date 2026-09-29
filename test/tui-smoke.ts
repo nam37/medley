@@ -5,6 +5,8 @@
 
 import { TextAttributes } from '@opentui/core';
 import { createTestRenderer } from '@opentui/core/testing';
+import { writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readSessionInfo, send } from '../src/client.ts';
@@ -67,6 +69,39 @@ try {
   await send(SESSION, { cmd: 'click', args: { ref: 7 }, client: 'mcp-smoke' });
   show('an agent clicked "Say hello"', await until('the agent', (f) => f.includes('Hello said 1') && f.includes('agent:')));
 
+  await keys('r');
+  show('r reloads the page', await until('the reload', (f) => f.includes('Hello said 0') && f.includes('reloaded')));
+
+  const notes = join(tmpdir(), 'medley smoke notes.txt');
+  writeFileSync(notes, 'hello from the smoke test\n');
+  await keys('1', '3');
+  mockInput.pressEnter();
+  await until('the file prompt', (f) => f.includes('choose files for [13 file'));
+  await mockInput.typeText(`"${notes}"`);
+  mockInput.pressEnter();
+  show('13, Enter, a path: the file field gets the file', await until('the upload', (f) => f.includes('Got medley smoke notes.txt')));
+
+  // While a command runs, a band sweeps across the medley badge (so its cells
+  // come in several shades) and the status line says what's happening.
+  const badgeShades = () => {
+    let width = 0;
+    let shades = 0;
+    for (const s of setup.captureSpans().lines[0].spans) {
+      if (width >= 8) break;
+      width += s.text.length;
+      shades++;
+    }
+    return shades;
+  };
+  await keys('w');
+  const working = await until('the wait', (f) => f.includes('waiting 2s for the page…'));
+  await Bun.sleep(200);
+  await setup.renderOnce();
+  const during = badgeShades();
+  show('w waits for the page, saying so', working);
+  await until('the wait to end', (f) => f.includes('waited 2s'));
+  console.log(`\nthe badge while working: ${during > 1 ? `animated (${during} shades)` : 'still (bad)'}; after: ${badgeShades() === 1 ? 'still' : 'animated (bad)'}`);
+
   mockInput.pressKey(':');
   await mockInput.typeText('scroll bottom');
   mockInput.pressEnter();
@@ -116,6 +151,13 @@ try {
   await keys('[');
   await until('tab 1 again', (f) => f.includes('tab 1/2') && f.includes('Todos'));
   console.log('\n[ went back to tab 1');
+
+  // A page that moves on by itself, after the command that started it is done
+  // (like a "checking your browser" page): the UI follows without a key press.
+  mockInput.pressKey(':');
+  await mockInput.typeText('click 14');
+  mockInput.pressEnter();
+  show('the page went on by itself', await until('the new page', (f) => f.includes('Medley fixture') && f.includes('the page loaded')));
 
   await keys('?');
   show('? shows the keys', await until('the help', (f) => f.includes('any key to close')));

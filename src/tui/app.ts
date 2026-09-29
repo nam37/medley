@@ -13,7 +13,8 @@ import {
   type KeyEvent,
 } from '@opentui/core';
 import type { Reply, SessionEvent } from '../client.ts';
-import { looksLikeAddress, parseCommand, splitFlags, toUrl } from '../commands.ts';
+import { resolve } from 'node:path';
+import { looksLikeAddress, parseCommand, splitFlags, splitWords, toUrl } from '../commands.ts';
 import { changedLines } from '../diff.ts';
 import type { Screenshot, View } from '../session.ts';
 import { Bar, type Segment } from './bar.ts';
@@ -28,7 +29,7 @@ export interface Backend {
   watch(onEvent: (e: SessionEvent) => void, onConnection: (connected: boolean) => void): () => void;
 }
 
-type PromptKind = 'url' | 'field' | 'select' | 'command' | 'find' | 'answer';
+type PromptKind = 'url' | 'field' | 'select' | 'file' | 'command' | 'find' | 'answer';
 interface Prompt {
   kind: PromptKind;
   label: string;
@@ -40,6 +41,7 @@ const PROMPT_HINTS: Record<PromptKind, string> = {
   url: 'type a web address, like en.wikipedia.org · Enter opens it · Esc cancels',
   field: 'Enter types and submits · Tab types only · Esc cancels',
   select: "type an option's text · Enter chooses it · Esc cancels",
+  file: 'type file paths, quoting any with spaces · Enter chooses them · Esc cancels',
   command: 'e.g. press Escape, wait 2, scroll bottom · Enter runs it · Esc cancels',
   find: 'Enter finds · Esc cancels',
   answer: 'Enter answers · Esc dismisses the dialog',
@@ -49,13 +51,16 @@ type Tone = 'info' | 'ok' | 'warn' | 'error';
 const TONE = { info: THEME.text, ok: THEME.ok, warn: THEME.warn, error: THEME.error };
 
 const HINTS = 'Tab select · Enter open · o address · ← back · / find · v grid · ? keys · q quit';
+const BADGE = ' medley ';
+const BADGE_FRAME_MS = 90;
+const BADGE_SWEEP = 2 * (BADGE.length - 1); // frames for the band to go across and back
 const FIELD_KINDS = new Set(['textbox', 'combobox']);
 const ACTIVITY_MS = 20_000; // how long another client's action stays in the status line
 
 const HELP = [
   'Tab, Shift+Tab     select the next or previous ref',
   'Enter              open the selected ref: links and buttons are clicked,',
-  '                   text fields and selects ask for input',
+  '                   text fields, selects and file fields ask for input',
   '0-9, then Enter    open a ref by its number',
   'mouse click        open the ref under the pointer',
   'h                  hover over the selected ref (menus that open on hover)',
@@ -67,7 +72,8 @@ const HELP = [
   '/, then n N        find text, then the next or previous match',
   ':                  run a command: press Escape, wait 2, select 6 High, …',
   'v                  grid: none → partial (main columns) → advanced (nested too)',
-  'r                  refresh the page',
+  'r, R               reload the page (R: bypassing the cache)',
+  'w                  wait 2 seconds and show what the page changed by itself',
   'y n                accept or dismiss a dialog the page opened',
   'Esc                clear the selection and the search',
   'q                  quit; asks first, then whether to keep the browser session',
@@ -89,6 +95,10 @@ export class App {
   private dialog: View['dialog'] = null;
   private tabs: View['tabs'] = { current: 1, count: 1 };
   private busy = false;
+  private doing = ''; // what the running command is doing, for the status line
+  private busySince = 0;
+  private badgeTimer: ReturnType<typeof setInterval> | undefined;
+  private badgeFrame = 0;
   private refreshQueued = false;
   private prompt: Prompt | null = null;
   private promptError = ''; // why the prompt's last input was refused
@@ -183,6 +193,7 @@ export class App {
 
   quit() {
     clearTimeout(this.activityTimer);
+    clearInterval(this.badgeTimer);
     this.stopWatching();
     this.renderer.keyInput.off('keypress', this.onKey);
     this.finish();
@@ -196,6 +207,9 @@ export class App {
       return false;
     }
     this.busy = true;
+    this.doing = opts.quiet ? '' : this.describeCommand(cmd, args);
+    this.busySince = Date.now();
+    this.animateBadge(true);
     this.drawStatus();
     try {
       const reply = await this.backend.request(cmd, args, opts.start);
@@ -214,6 +228,8 @@ export class App {
       return false;
     } finally {
       this.busy = false;
+      this.doing = '';
+      this.animateBadge(false);
       this.draw();
       if (this.refreshQueued) {
         this.refreshQueued = false;
@@ -255,7 +271,7 @@ export class App {
   private onEvent(e: SessionEvent) {
     if (e.client === this.backend.client || ['snapshot', 'status', 'screenshot', 'tabs'].includes(e.cmd)) return;
     const who = e.client.startsWith('mcp') ? 'agent' : e.client;
-    this.activity = `${who}: ${e.summary}`;
+    this.activity = e.client === 'page' ? e.summary : `${who}: ${e.summary}`;
     clearTimeout(this.activityTimer);
     this.activityTimer = setTimeout(() => {
       this.activity = '';
@@ -278,7 +294,7 @@ export class App {
     } else if (ref.kind === 'select') {
       this.openPrompt({ kind: 'select', ref: ref.ref, label: `choose in ${label}` }, ref.value ?? '');
     } else if (ref.kind === 'file') {
-      this.say("file upload isn't supported yet", 'warn');
+      this.openPrompt({ kind: 'file', ref: ref.ref, label: `choose files for ${label}` });
     } else {
       void this.run('click', { ref: ref.ref });
     }
@@ -338,6 +354,11 @@ export class App {
       case 'select':
         void this.run('select', { ref: prompt.ref, option: value });
         break;
+      case 'file': {
+        const files = splitWords(value).map((f) => resolve(f));
+        if (files.length) void this.run('upload', { ref: prompt.ref, files });
+        break;
+      }
       case 'answer':
         void this.run('dialog', { action: 'accept', text: value });
         break;
@@ -358,7 +379,7 @@ export class App {
 
   private command(line: string) {
     try {
-      const { words, flags } = splitFlags(line.trim().split(/\s+/).filter(Boolean));
+      const { words, flags } = splitFlags(splitWords(line));
       const { cmd, args, start } = parseCommand(words, flags);
       void this.run(cmd, args, { start });
     } catch (e) {
@@ -466,8 +487,10 @@ export class App {
       case 'f':
         return void this.run('forward');
       case 'r':
+        return void this.run('reload', { hard: key.shift });
+      case 'w':
         this.picturesFor = null; // pictures may have loaded or changed too
-        return void this.run('snapshot');
+        return void this.run('wait', { seconds: 2 });
       case 'v':
         return this.cycleGrid();
       case 'o':
@@ -592,12 +615,81 @@ export class App {
     this.hints.set([{ text: ` ${this.dialog ? 'y accept · n dismiss the dialog' : HINTS}` }]);
   }
 
+  /** While a command runs, a light band sweeps back and forth across the badge. */
+  private animateBadge(on: boolean) {
+    if (on && !this.badgeTimer) {
+      this.badgeFrame = 0;
+      let second = 0;
+      this.badgeTimer = setInterval(() => {
+        this.badgeFrame++;
+        this.drawTop();
+        // The status line counts seconds on slow commands.
+        const s = Math.floor((Date.now() - this.busySince) / 1000);
+        if (s !== second) {
+          second = s;
+          this.drawStatus();
+        }
+      }, BADGE_FRAME_MS);
+    } else if (!on && this.badgeTimer) {
+      clearInterval(this.badgeTimer);
+      this.badgeTimer = undefined;
+    }
+  }
+
+  private badge(): Segment[] {
+    const plain = { fg: THEME.accentFg, attrs: TextAttributes.BOLD };
+    if (!this.badgeTimer) return [{ text: BADGE, bg: THEME.accentBg, ...plain }];
+    const f = this.badgeFrame % BADGE_SWEEP;
+    const head = f < BADGE.length ? f : BADGE_SWEEP - f; // 0 → 7 → 0
+    const glow = THEME.accentGlow;
+    return [...BADGE].map((ch, i) => ({
+      text: ch,
+      bg: glow[Math.max(0, glow.length - 1 - Math.abs(i - head))],
+      ...plain,
+    }));
+  }
+
+  /** What a command is doing, in words, for the status line while it runs. */
+  private describeCommand(cmd: string, args: Record<string, unknown>): string {
+    const ref = Number(args.ref);
+    const label = this.current?.labels.find(([n]) => n === ref)?.[1] ?? `[${args.ref}]`;
+    switch (cmd) {
+      case 'goto':
+        return `opening ${String(args.url).replace(/^https?:\/\//, '')}`;
+      case 'click':
+        return `clicking ${label}`;
+      case 'type':
+        return `typing into ${label}`;
+      case 'select':
+        return `choosing in ${label}`;
+      case 'upload':
+        return `choosing files for ${label}`;
+      case 'hover':
+        return `hovering over ${label}`;
+      case 'reload':
+        return args.hard ? 'reloading, bypassing the cache' : 'reloading';
+      case 'back':
+        return 'going back';
+      case 'forward':
+        return 'going forward';
+      case 'scroll':
+        return 'scrolling';
+      case 'wait':
+        return `waiting ${args.seconds}s for the page`;
+      case 'tab':
+        return `switching to tab ${args.n}`;
+      case 'dialog':
+        return 'answering the dialog';
+      case 'stop':
+        return 'stopping the session';
+      default:
+        return cmd;
+    }
+  }
+
   private drawTop() {
     const p = this.current;
-    const left: Segment[] = [
-      { text: ' medley ', fg: THEME.accentFg, bg: THEME.accentBg, attrs: TextAttributes.BOLD },
-      { text: ' ' },
-    ];
+    const left: Segment[] = [...this.badge(), { text: ' ' }];
     if (p) left.push({ text: p.title || '(untitled)', attrs: TextAttributes.BOLD }, { text: `  ${p.url}`, fg: THEME.barDim });
     else left.push({ text: 'no page open', fg: THEME.barDim });
     const grid = this.page.gridMode === 'none' ? '' : ` · ${GRID_LABELS[this.page.gridMode]}`;
@@ -615,7 +707,10 @@ export class App {
     if (this.quitting !== 'no') left = [{ text: question[this.quitting], fg: THEME.warn }];
     else if (this.prompt && this.promptError) left = [{ text: ` ${this.promptError}`, fg: THEME.error }];
     else if (this.prompt) left = [{ text: ` ${PROMPT_HINTS[this.prompt.kind]}`, fg: THEME.dim }];
-    else if (this.busy) left = [{ text: ' … working', fg: THEME.warn }];
+    else if (this.busy && this.doing) {
+      const s = Math.floor((Date.now() - this.busySince) / 1000);
+      left = [{ text: ` ${this.doing}…${s >= 2 ? ` ${s}s` : ''}`, fg: THEME.dim }];
+    }
     else if (this.digits) left = [{ text: ` ref ${this.digits}▏ Enter to open · Esc to cancel`, fg: THEME.link }];
     else if (this.dialog) left = [{ text: ` ⚠ the page asks (${this.dialog.type}): "${this.dialog.message}"`, fg: THEME.warn }];
     else left = [{ text: ` ${this.message.text}`, fg: TONE[this.message.tone] }];

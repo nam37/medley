@@ -1,6 +1,8 @@
 // Session commands as typed words ("type 4 hello --submit"), shared by the
 // CLI and the terminal UI's command line.
 
+import { resolve } from 'node:path';
+
 export interface ParsedCommand {
   cmd: string;
   args: Record<string, unknown>;
@@ -11,7 +13,10 @@ export interface CommandFlags {
   links?: boolean;
   diff?: boolean;
   submit?: boolean;
+  hard?: boolean;
 }
+
+const FLAGS = new Set(['--links', '--diff', '--submit', '--hard']);
 
 export class UsageError extends Error {}
 
@@ -30,11 +35,18 @@ export function looksLikeAddress(text: string): boolean {
   return SCHEME.test(text) || LOCAL.test(text) || /^[^/]+\.[^/.]+/.test(text);
 }
 
-/** Pull --links, --diff and --submit out of a word list. */
+/** Split a typed line into words, as a shell would for "quoted words" and 'quoted words'. */
+export function splitWords(line: string): string[] {
+  const words: string[] = [];
+  for (const m of line.matchAll(/"([^"]*)"?|'([^']*)'?|(\S+)/g)) words.push(m[1] ?? m[2] ?? m[3]);
+  return words;
+}
+
+/** Pull --links, --diff, --submit and --hard out of a word list. */
 export function splitFlags(words: string[]): { words: string[]; flags: CommandFlags } {
   const flags: CommandFlags = {};
   const rest = words.filter((w) => {
-    if (w === '--links' || w === '--diff' || w === '--submit') {
+    if (FLAGS.has(w)) {
       flags[w.slice(2) as keyof CommandFlags] = true;
       return false;
     }
@@ -77,6 +89,12 @@ export function parseCommand([command, ...rest]: string[], flags: CommandFlags =
       return { cmd: 'close-tab', args: { n: rest[0] } };
     case 'scroll':
       return { cmd: 'scroll', args: { to: rest[0] ?? 'down' } };
+    case 'reload':
+      return { cmd: 'reload', args: { hard: flags.hard } };
+    case 'upload':
+      need(2, 'upload <ref> <file>...');
+      // The session may run in another directory; paths are resolved here.
+      return { cmd: 'upload', args: { ref: rest[0], files: rest.slice(1).map((f) => resolve(f)) } };
     case 'back':
     case 'forward':
     case 'status':

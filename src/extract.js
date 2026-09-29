@@ -177,6 +177,8 @@
     if (tag === 'input' || tag === 'textarea') {
       if (!['textbox', 'combobox', 'slider', 'file'].includes(kind)) return '';
       if (el.type === 'password') return el.value ? '********' : '';
+      // A file field's value is a fake path ("C:\fakepath\cv.pdf"); its files' names say more.
+      if (el.type === 'file') return [...(el.files || [])].map((f) => f.name).join(', ');
       return el.value;
     }
     if (kind === 'textbox' && el.isContentEditable) return clean(el.innerText);

@@ -1,6 +1,7 @@
 // MCP server on stdio. Each tool forwards to the session daemon, so an agent
 // and a person at a terminal (`medley snapshot`) share one browser.
 
+import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { send, type StartOptions } from './client.ts';
 
@@ -81,6 +82,24 @@ const TOOLS: Tool[] = [
     inputSchema: { type: 'object', properties: { ref: REF }, required: ['ref'] },
   },
   {
+    name: 'browser_upload',
+    cmd: 'upload',
+    description:
+      'Choose files for a file field ([n file "..."]), as if they were picked in its file dialog. Paths are on this machine; relative ones resolve against the directory the MCP server runs in.',
+    inputSchema: {
+      type: 'object',
+      properties: { ref: REF, files: { type: 'array', items: { type: 'string' } } },
+      required: ['ref', 'files'],
+    },
+  },
+  {
+    name: 'browser_reload',
+    cmd: 'reload',
+    description:
+      "Reload the page, as a browser's refresh button does, and return it. With hard=true, bypass the cache. To see what a page changed on its own without reloading it, use browser_wait.",
+    inputSchema: { type: 'object', properties: { hard: { type: 'boolean' } } },
+  },
+  {
     name: 'browser_tabs',
     cmd: 'tabs',
     description: 'List the open tabs (a link or script can open a new one; the result of that action says so).',
@@ -155,7 +174,9 @@ export async function serveMcp(sessionName: string, start: StartOptions) {
         const tool = TOOLS.find((t) => t.name === params?.name);
         if (!tool) throw new RpcError(-32602, `unknown tool: ${params?.name}`);
         try {
-          const command = { cmd: tool.cmd, args: params.arguments ?? {}, client };
+          const args = { ...(params.arguments ?? {}) };
+          if (tool.cmd === 'upload' && Array.isArray(args.files)) args.files = args.files.map((f: unknown) => resolve(String(f)));
+          const command = { cmd: tool.cmd, args, client };
           const text = await send(sessionName, command, tool.cmd === 'goto' ? start : undefined);
           return { content: [{ type: 'text', text }] };
         } catch (e) {

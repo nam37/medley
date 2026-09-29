@@ -3,6 +3,7 @@
 // changed since that client last looked.
 
 import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Browser, sleep, type Dialog, type LaunchOptions, type Page } from './browser.ts';
 import { diffLines } from './diff.ts';
@@ -70,6 +71,14 @@ export class Session {
   private startedAt = Date.now();
   private tabs: Page[]; // open tabs, in the order they opened; `page` is the current one
   private openers = new Map<Page, Page>(); // the tab each popup came from, to return to when it closes
+  private acting = 0; // commands running now; a navigation they cause is theirs to report
+  private changePending = false;
+  /**
+   * Called when the current tab loads a new document by itself, outside any
+   * command (a redirect after a "checking your browser" page, a meta refresh,
+   * a sign-in that finishes), once it has settled, with the page's address.
+   */
+  onPageChange: ((url: string) => void) | null = null;
 
   private constructor(
     private browser: Browser,
@@ -168,6 +177,23 @@ export class Session {
     const action = actions[to];
     if (!action) throw new Error(`scroll where? use down, up, top, bottom, or a ref`);
     return this.act(client, `scrolled ${to}`, action, { showScroll: true });
+  }
+
+  reload(client: string, hard = false): Promise<string> {
+    if (this.dialog) this.answerQuietly();
+    return this.act(client, hard ? 'reloaded, bypassing the cache' : 'reloaded', () => this.page.reload(hard));
+  }
+
+  /** Give a file field these files (absolute paths on this machine), as if they were picked in its dialog. */
+  async upload(client: string, ref: number, files: string[]): Promise<string> {
+    await this.checkRefs(client);
+    const names = files.map((f) => basename(f)).join(', ');
+    const what = `chose ${files.length === 1 ? names : `${files.length} files (${names})`} for ${this.label(client, ref)}`;
+    return this.act(client, what, async () => {
+      const r = await this.call<{ error?: string }>('fileField', ref, files.length);
+      if (r.error) throw new Error(r.error);
+      await this.page.setFiles(`(${ACTIONS}).element(${ref})`, files);
+    });
   }
 
   history(client: string, delta: -1 | 1): Promise<string> {
@@ -332,6 +358,9 @@ export class Session {
   // ---- machinery ----------------------------------------------------------
 
   private watch(page: Page) {
+    page.onNavigated = () => {
+      if (page === this.page && !this.acting) void this.pageChanged(page);
+    };
     page.onDialog = (d) => {
       // Alerts only have an OK button, and leaving the page is what was asked
       // for; confirm() and prompt() are real choices, so they wait for an answer,
@@ -351,6 +380,21 @@ export class Session {
     };
   }
 
+  /** The page navigated by itself: let it settle (it may redirect again), then say so, once. */
+  private async pageChanged(page: Page) {
+    if (this.changePending) return;
+    this.changePending = true;
+    try {
+      await page.settle();
+      if (page !== this.page || page.closed || this.acting || this.dialog) return;
+      this.onPageChange?.(await page.evaluate<string>('location.href'));
+    } catch {
+      // the tab closed or navigated again mid-look; a later navigation or command catches up
+    } finally {
+      this.changePending = false;
+    }
+  }
+
   /**
    * Run an action, let the page settle, and report what changed. A confirm()
    * or prompt() blocks the page (and the action with it), so if one opens the
@@ -363,6 +407,20 @@ export class Session {
     outcome: Outcome = {},
   ): Promise<string> {
     if (this.dialog) throw new Error(this.dialogText());
+    this.acting++;
+    try {
+      return await this.actNow(client, what, action, outcome);
+    } finally {
+      this.acting--;
+    }
+  }
+
+  private async actNow(
+    client: string,
+    what: string | (() => string),
+    action: () => Promise<unknown>,
+    outcome: Outcome,
+  ): Promise<string> {
     await this.ensureTab();
     let wake!: () => void;
     const dialogOpened = new Promise<'dialog'>((resolve) => {

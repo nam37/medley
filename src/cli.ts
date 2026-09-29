@@ -20,6 +20,8 @@ session commands:
   press <key>                     Enter, Escape, Tab, ArrowDown, PageDown, a, Control+a, ...
   hover <ref>                     move the mouse over an element (menus that open on hover)
   scroll [down|up|top|bottom|<ref>]
+  upload <ref> <file>...          choose files for a file field, as if picked in its dialog
+  reload [--hard]                 reload the page (--hard: bypass the cache)
   back, forward
   tabs                            list open tabs (links can open new ones)
   tab <number>                    switch to a tab
@@ -61,6 +63,7 @@ const opts = {
   links: false,
   diff: false,
   submit: false,
+  hard: false,
   json: false,
   color:!!process.stdout.isTTY && !process.env.NO_COLOR,
   width: undefined as number | undefined,
@@ -76,6 +79,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--links') opts.links = true;
   else if (a === '--diff') opts.diff = true;
   else if (a === '--submit') opts.submit = true;
+  else if (a === '--hard') opts.hard = true;
   else if (a === '--json') opts.json = true;
   else if (a === '--color') opts.color = true;
   else if (a === '--no-color') opts.color = false;

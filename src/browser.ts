@@ -130,6 +130,7 @@ export class Page {
   // new document needs a new world.
   private world: number | null = null;
   onDialog: ((d: Dialog) => void) | null = null;
+  onNavigated: (() => void) | null = null; // the main frame got a new document
   closed = false; // the tab went away; waiting on it is pointless
 
   constructor(
@@ -163,6 +164,7 @@ export class Page {
           if (!p.frame.parentId) {
             this.mainFrameId = p.frame.id;
             this.world = null; // a new document
+            this.onNavigated?.();
           }
           break;
       }
@@ -214,6 +216,14 @@ export class Page {
     await this.settle();
   }
 
+  /** Reload the page, from the cache as usual or, when `hard`, from the network. */
+  async reload(hard = false) {
+    const stopped = this.waitFor('Page.frameStoppedLoading', 20000, (p) => p.frameId === this.mainFrameId);
+    await this.send('Page.reload', { ignoreCache: hard });
+    await stopped;
+    await this.settle();
+  }
+
   /** Go back (-1) or forward (1) in history. False if there's nowhere to go. */
   async history(delta: -1 | 1): Promise<boolean> {
     const { currentIndex, entries } = await this.send('Page.getNavigationHistory');
@@ -250,9 +260,28 @@ export class Page {
 
   /** Evaluate in medley's isolated world (see `world`), creating it for this document if needed. */
   async evaluate<T>(expression: string): Promise<T> {
+    return (await this.run(expression, true)).value as T;
+  }
+
+  /**
+   * Give a file input (the element `expression` evaluates to, in medley's
+   * world) these files, as if they were picked in its file dialog. The page
+   * gets its usual input and change events.
+   */
+  async setFiles(expression: string, files: string[]) {
+    const { objectId } = await this.run(expression, false);
+    if (!objectId) throw new Error('the file field went away');
+    try {
+      await this.send('DOM.setFileInputFiles', { objectId, files });
+    } finally {
+      await this.send('Runtime.releaseObject', { objectId }).catch(() => {});
+    }
+  }
+
+  private async run(expression: string, returnByValue: boolean): Promise<{ value?: unknown; objectId?: string }> {
     const run = async () => {
       this.world ??= (await this.send('Page.createIsolatedWorld', { frameId: this.mainFrameId, worldName: 'medley' })).executionContextId;
-      return this.send('Runtime.evaluate', { expression, contextId: this.world, returnByValue: true, awaitPromise: true });
+      return this.send('Runtime.evaluate', { expression, contextId: this.world, returnByValue, awaitPromise: true });
     };
     let r;
     try {
@@ -266,7 +295,7 @@ export class Page {
     if (r.exceptionDetails) {
       throw new Error(`page script failed: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
     }
-    return r.result.value as T;
+    return r.result;
   }
 
   async click(x: number, y: number) {

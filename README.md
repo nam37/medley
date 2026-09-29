@@ -74,12 +74,15 @@ It shows the session's current page, or opens `url`. Refs are colored and
 link text is underlined. Lines that changed with the last action are marked in
 the left gutter. The status line shows the result of your last action on the
 left and, in purple, whatever another client (an agent) just did; the page
-refreshes by itself when that happens. `●` means it's following the session live.
+refreshes by itself when that happens, and also when the page loads a new one
+on its own, such as the real site after a "checking your browser" page. `●`
+means it's following the session live. While a command runs, a light band
+sweeps across the `medley` badge and the status line says what's happening.
 
 | Keys | |
 |---|---|
 | Tab, Shift+Tab | select the next or previous ref; the status line shows where a link goes |
-| Enter, or a mouse click | open the ref: links and buttons are clicked; text fields and selects ask for input |
+| Enter, or a mouse click | open the ref: links and buttons are clicked; text fields, selects and file fields ask for input |
 | 0-9, then Enter | open a ref by its number |
 | h | hover over the selected ref (menus that open on hover) |
 | [ ] | previous or next tab; the top bar shows `tab 2/3` when there's more than one |
@@ -89,7 +92,8 @@ refreshes by itself when that happens. `●` means it's following the session li
 | / then n N | find text, next or previous match |
 | : | run any session command, e.g. `press Escape`, `wait 2`, `select 6 High` |
 | v | cycle the grid: no grid → partial grid (the page's main columns, like a sidebar beside the content) → advanced grid (the page as laid out, with its colors and pictures) |
-| r | refresh |
+| r, R | reload the page, like a browser's refresh (R bypasses the cache) |
+| w | wait 2 seconds and show what the page changed by itself |
 | y n | accept or dismiss a `confirm()` the page opened (a `prompt()` asks for its answer) |
 | ? | show all keys |
 | q | quit: asks "Quit medley?", then whether to keep the browser session running for other clients |
@@ -128,6 +132,8 @@ medley select <ref> <option>        choose a <select> option by text or value
 medley press <key>                  Enter, Escape, Tab, ArrowDown, PageDown, a, Control+a, …
 medley hover <ref>                  move the mouse over an element (menus that open on hover)
 medley scroll [down|up|top|bottom|<ref>]
+medley upload <ref> <file>...        choose files for a file field, as if picked in its dialog
+medley reload [--hard]              reload the page (--hard: bypass the cache)
 medley back | forward
 medley tabs                         list open tabs
 medley tab <number>                 switch to a tab
@@ -212,7 +218,14 @@ After an action you get one of:
   `type` focuses the field, selects its text and inserts the new text, so
   frameworks see ordinary input events.
 - **Settling:** after each action it waits for any navigation, then for the
-  network and the DOM to go quiet, before taking the next snapshot.
+  network and the DOM to go quiet, before taking the next snapshot. A page
+  that moves on later by itself (a redirect after a browser check, a meta
+  refresh) is announced on the event stream once it settles; the next
+  command reports it as a new page.
+- **Uploads** set a file field's files directly, as picking them in its
+  dialog would, and the page gets its usual `change` event. Paths are resolved
+  by the client (the CLI, the terminal UI or the MCP server) against its own
+  directory. A snapshot shows the chosen files' names as the field's value.
 - **Extraction** (`src/extract.js`) runs inside the page and walks what's
   rendered, including open shadow roots and same-origin iframes.
   **Rendering** (`src/render.ts`) turns that into text. **Diffs**
@@ -221,14 +234,16 @@ After an action you get one of:
 `test/fixture.html` covers rendering edge cases; `test/app.html` covers
 actions (menus, async form submit, `<select>`, alert, confirm, a covering
 overlay, lazy loading, a hover menu, links to the same tab and a new tab, a
-popup that closes itself, and a script that tries to forge the ref table).
+popup that closes itself, a multi-file field, a button whose page moves on by
+itself a moment later, and a script that tries to forge the ref table).
 `bun test/preview.ts <url> out.html [--mode advanced] [--width 150] [--rows 120]`
 draws a page the way the terminal UI would, into an HTML file of colored
 terminal cells, for looking at the grid modes without a terminal.
 `bun run test:tui` drives the terminal UI through OpenTUI's test renderer
 against a real session on `test/app.html`: keys, a field prompt, a simulated
-agent acting in the same session, find, a command, a mouse click, back, a
-`confirm()`, and the help overlay. It prints each frame as it goes.
+agent acting in the same session, reload, a file prompt, the working badge,
+find, a command, a mouse click, back, a `confirm()`, a page that moves on by
+itself, and the help overlay. It prints each frame as it goes.
 `bun scripts/site-shots.ts <dir> [--as <url>]` drives the terminal UI through
 the demo shop in `docs/demo/` and saves its frames as HTML; the website's
 terminal pictures come from it.
@@ -236,7 +251,7 @@ terminal pictures come from it.
 ## Known gaps
 
 - Cross-origin iframes render as placeholders and can't be acted on.
-- There's no file upload or drag and drop.
+- There's no drag and drop.
 - Downloads are blocked.
 - Canvas and WebGL apps don't render.
 - Some sites block headless Chrome; `--headed` may help.
@@ -252,4 +267,4 @@ terminal pictures come from it.
 ## Next
 
 - Images in the terminal UI via the kitty or sixel graphics protocols.
-- File upload, and acting inside cross-origin iframes.
+- Acting inside cross-origin iframes.

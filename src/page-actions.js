@@ -132,6 +132,17 @@
     return { text: match.text.trim() };
   },
 
+  // Check that a file field can take `count` files, before they're set on it.
+  fileField(ref, count) {
+    const el = this.element(ref);
+    if (!el) return this.missing(ref);
+    if (el.localName !== 'input' || el.type !== 'file') return { error: `ref ${ref} is not a file field` };
+    if (el.disabled) return { error: `ref ${ref} is disabled` };
+    if (count > 1 && !el.multiple) return { error: `ref ${ref} takes one file` };
+    el.scrollIntoView({ block: 'center', behavior: 'instant' });
+    return {};
+  },
+
   scrollIntoView(ref) {
     const el = this.element(ref);
     if (!el) return this.missing(ref);

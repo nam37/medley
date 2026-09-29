@@ -5,6 +5,8 @@
 // away, or after 30 idle minutes. Started by client.ts; not meant to be run by hand.
 
 import { randomUUID } from 'node:crypto';
+import { statSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import { removeSessionInfo, writeSessionInfo, type Command, type SessionEvent } from './client.ts';
 import { Session } from './session.ts';
 
@@ -111,6 +113,21 @@ function tab(value: unknown): number {
   return n;
 }
 
+/** Paths to upload: absolute (clients resolve them against their own directory), each an existing file. */
+function files(value: unknown): string[] {
+  const list = Array.isArray(value) ? value.map(String) : [];
+  if (!list.length) throw new Error('upload needs at least one file');
+  for (const f of list) {
+    if (!isAbsolute(f)) throw new Error(`"${f}" is not an absolute path`);
+    let isFile = false;
+    try {
+      isFile = statSync(f).isFile();
+    } catch {}
+    if (!isFile) throw new Error(`there is no file at ${f}`);
+  }
+  return list;
+}
+
 async function dispatch({ cmd, args = {} }: Command, client: string): Promise<string> {
   switch (cmd) {
     case 'goto':
@@ -135,6 +152,10 @@ async function dispatch({ cmd, args = {} }: Command, client: string): Promise<st
       return session.switchTab(client, tab(args.n));
     case 'close-tab':
       return session.closeTab(client, args.n === undefined ? undefined : tab(args.n));
+    case 'reload':
+      return session.reload(client, !!args.hard);
+    case 'upload':
+      return session.upload(client, ref(args.ref), files(args.files));
     case 'back':
       return session.history(client, -1);
     case 'forward':
@@ -168,6 +189,10 @@ async function shutdown() {
   await session.close().catch(() => {});
   process.exit(0);
 }
+
+// A page that moves on by itself (a redirect after a browser check, a meta
+// refresh) is news to anyone watching: the terminal UI redraws on it.
+session.onPageChange = (url) => announce({ client: 'page', cmd: 'navigated', ok: true, summary: `the page loaded ${url} by itself` });
 
 writeSessionInfo(name, { pid: process.pid, port: server.port!, token, startedAt: Date.now() });
 resetIdle();

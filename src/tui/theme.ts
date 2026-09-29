@@ -20,6 +20,8 @@ export const THEME = {
   barDim: RGBA.fromHex('#8a93a3'),
   accentBg: RGBA.fromHex('#2f9fb8'),
   accentFg: RGBA.fromHex('#0f1419'),
+  // The badge's background while the session works: a light band sweeps across it.
+  accentGlow: ['#2f9fb8', '#5cb4c9', '#8ccadb', '#c0e3ed'].map((hex) => RGBA.fromHex(hex)),
 
   ok: RGBA.fromHex('#46b35c'),
   warn: RGBA.fromHex('#d19a3a'),

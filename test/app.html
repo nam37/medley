@@ -56,6 +56,11 @@
       <span class="hover-menu"><button>Account</button> <span class="menu"><a href="#profile">Profile</a> <a href="#billing">Billing</a></span></span>
       <button id="popup">Open a popup</button>
     </p>
+    <p>
+      <label>Attachments <input type="file" id="files" multiple></label>
+      <span id="files-out">No files chosen</span>
+    </p>
+    <p><button id="later">Go to the fixture shortly</button></p>
 
     <section id="more"><p>Scroll down to load more.</p></section>
   </main>
@@ -107,6 +112,18 @@
     $('newsletter').addEventListener('click', () => { $('overlay').hidden = false; });
     $('close-overlay').addEventListener('click', () => { $('overlay').hidden = true; });
     $('covered').addEventListener('click', () => { $('covered').textContent = 'Bought!'; });
+
+    $('files').addEventListener('change', (e) => {
+      const files = [...e.target.files];
+      $('files-out').textContent = files.length
+        ? `Got ${files.map((f) => `${f.name} (${f.size} bytes)`).join(', ')}`
+        : 'No files chosen';
+    });
+
+    // Moves on by itself after the click has settled, as a "checking your browser" page does.
+    $('later').addEventListener('click', () => {
+      setTimeout(() => { location.href = 'fixture.html'; }, 1500);
+    });
 
     // A tab opened by script, which can close itself.
     $('popup').addEventListener('click', () => {

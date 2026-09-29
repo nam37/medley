@@ -43,7 +43,7 @@
     combobox: 'combobox', slider: 'slider',
     tab: 'tab', menuitem: 'menuitem', option: 'option',
   };
-  const FIELD = new Set(['textbox', 'combobox', 'select', 'checkbox', 'radio', 'slider', 'file']);
+  const FIELD = new Set(['textbox', 'password', 'combobox', 'select', 'checkbox', 'radio', 'slider', 'file']);
   // Regions (named <section>s) are left out: they nearly always just repeat the heading inside them.
   const ROLE_LANDMARK = {
     banner: 'banner', navigation: 'navigation', main: 'main', complementary: 'complementary',
@@ -130,6 +130,7 @@
         if (t === 'checkbox' || t === 'radio') return t;
         if (t === 'range') return 'slider';
         if (t === 'file') return 'file';
+        if (t === 'password') return 'password';
         return 'textbox';
       }
     }
@@ -175,7 +176,7 @@
     const tag = el.localName;
     if (tag === 'select') return clean([...el.selectedOptions].map((o) => o.text).join(', '));
     if (tag === 'input' || tag === 'textarea') {
-      if (!['textbox', 'combobox', 'slider', 'file'].includes(kind)) return '';
+      if (!['textbox', 'password', 'combobox', 'slider', 'file'].includes(kind)) return '';
       if (el.type === 'password') return el.value ? '********' : '';
       // A file field's value is a fake path ("C:\fakepath\cv.pdf"); its files' names say more.
       if (el.type === 'file') return [...(el.files || [])].map((f) => f.name).join(', ');
@@ -202,7 +203,7 @@
     if (a('aria-current') && a('aria-current') !== 'false') s.push('current');
     if (el.disabled || a('aria-disabled') === 'true') s.push('disabled');
     // Focus matters where keystrokes go; on buttons and links it's just churn in diffs.
-    if (el === focused && (kind === 'textbox' || kind === 'combobox')) s.push('focused');
+    if (el === focused && (kind === 'textbox' || kind === 'password' || kind === 'combobox')) s.push('focused');
     return s;
   }
 

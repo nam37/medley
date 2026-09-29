@@ -100,7 +100,8 @@ sweeps across the `medley` badge and the status line says what's happening.
 | Q, Ctrl+C | quit at once, keeping the session running |
 
 In a field prompt, Enter types and submits (like pressing Enter in the field),
-Tab types without submitting, and Esc cancels.
+Tab types without submitting, and Esc cancels. A password field's prompt shows
+a dot for each character and never the text itself; it starts empty.
 
 The grid modes only change how the page is drawn; the text, refs and keys stay
 the same.
@@ -135,6 +136,7 @@ medley scroll [down|up|top|bottom|<ref>]
 medley upload <ref> <file>...        choose files for a file field, as if picked in its dialog
 medley reload [--hard]              reload the page (--hard: bypass the cache)
 medley back | forward
+medley downloads                    list what this session downloaded, and where
 medley tabs                         list open tabs
 medley tab <number>                 switch to a tab
 medley close-tab [number]           close a tab (the current one by default)
@@ -148,7 +150,21 @@ medley mcp                          MCP server on stdio, sharing the session
 ```
 
 Options: `--session <name>` for parallel sessions, `--headed` to watch the
-browser window, `--no-color`, `--width <px>`, `--browser <path>`.
+browser window, `--no-color`, `--width <px>`, `--browser <path>`, and two that
+apply when a session starts:
+
+- `--profile <name>` keeps the browser profile in `~/.medley/profiles/<name>`,
+  so cookies, logins and site storage last from one session to the next (or
+  set `MEDLEY_PROFILE`). Without it, each session starts with a fresh profile
+  that's deleted when it stops. One session at a time can use a profile.
+- `--downloads <dir>` is where downloads go (default `~/Downloads/medley`).
+  A click or a `goto` that downloads a file waits for it (up to 30 seconds)
+  and ends with a note saying where it was saved; `downloads` lists them all.
+  A file never overwrites another: the second `report.csv` is `report (2).csv`.
+
+If a session was started by an older copy of medley, commands it doesn't know
+fail with a hint to restart it (`medley stop`), and the terminal UI says so
+when it attaches.
 
 ### Use it from an agent
 
@@ -166,7 +182,7 @@ with a shell can also just call the CLI.
 | Syntax | Meaning |
 |---|---|
 | `[7]text` | link (ref 7); state in parens, e.g. `(current)`, `(expanded)` |
-| `[8 kind "name" = "value" states]` | other controls: button, textbox, combobox, select, checkbox, radio, slider, tab, menuitem, option, file |
+| `[8 kind "name" = "value" states]` | other controls: button, textbox, password, combobox, select, checkbox, radio, slider, tab, menuitem, option, file (a password's value shows as `********`; a file field's, as the chosen files' names) |
 | `[9 clickable …]` | outermost pointer-cursor element that isn't a real control (script-driven click target) |
 | `── nav "Primary" ──` | landmark: header, nav, main, aside, footer, search, form, dialog; `header › nav` when nested |
 | `#`, `-`, `1.`, `\|` tables, fences, `>` | headings, lists, data tables, `<pre>`, blockquotes |
@@ -235,15 +251,18 @@ After an action you get one of:
 actions (menus, async form submit, `<select>`, alert, confirm, a covering
 overlay, lazy loading, a hover menu, links to the same tab and a new tab, a
 popup that closes itself, a multi-file field, a button whose page moves on by
-itself a moment later, and a script that tries to forge the ref table).
+itself a moment later, a download link, a password field, and a script that
+tries to forge the ref table). `test/profile.html` counts its visits in the
+browser profile, for checking that `--profile` keeps it.
 `bun test/preview.ts <url> out.html [--mode advanced] [--width 150] [--rows 120]`
 draws a page the way the terminal UI would, into an HTML file of colored
 terminal cells, for looking at the grid modes without a terminal.
 `bun run test:tui` drives the terminal UI through OpenTUI's test renderer
 against a real session on `test/app.html`: keys, a field prompt, a simulated
 agent acting in the same session, reload, a file prompt, the working badge,
-find, a command, a mouse click, back, a `confirm()`, a page that moves on by
-itself, and the help overlay. It prints each frame as it goes.
+a masked password prompt, a download, find, a command, a mouse click, back, a
+`confirm()`, a page that moves on by itself, and the help overlay. It prints
+each frame as it goes.
 `bun scripts/site-shots.ts <dir> [--as <url>]` drives the terminal UI through
 the demo shop in `docs/demo/` and saves its frames as HTML; the website's
 terminal pictures come from it.
@@ -252,12 +271,9 @@ terminal pictures come from it.
 
 - Cross-origin iframes render as placeholders and can't be acted on.
 - There's no drag and drop.
-- Downloads are blocked.
 - Canvas and WebGL apps don't render.
 - Some sites block headless Chrome; `--headed` may help.
 - `--headed` and the 30-minute idle shutdown haven't been exercised yet.
-- The terminal UI's input line can't mask what you type, so a password typed
-  into a field prompt is visible on screen (the page itself still masks it).
 - Advanced grid draws solid background colors and `<img>`, `<video>` and
   `<canvas>` pictures, but not CSS background images or gradients. Elements
   fixed to the window (chat buttons, cookie bars) appear where they sat at the

@@ -2,9 +2,9 @@
 // browser, talk CDP over its WebSocket, drive pages.
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { basename, extname, join } from 'node:path';
 import type { KeyPress } from './keys.ts';
 
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -343,16 +343,31 @@ export interface LaunchOptions {
   width?: number;
   height?: number;
   headless?: boolean;
+  /** A browser profile directory to keep (cookies, logins); a throwaway one otherwise. */
+  profile?: string;
+  /** Where downloads go. */
+  downloads?: string;
 }
+
+export const DEFAULT_DOWNLOADS = join(homedir(), 'Downloads', 'medley');
+
+/** A download's progress, reported by the browser as it happens. */
+export type DownloadEvent =
+  | { state: 'started'; guid: string; name: string; url: string }
+  | { state: 'done'; guid: string; name: string; path: string; bytes: number }
+  | { state: 'failed'; guid: string; name: string };
 
 export class Browser {
   private popups: { targetId: string; openerId: string }[] = [];
+  private downloading = new Map<string, { name: string; received: number; total: number }>();
   readonly exited: Promise<void>;
 
   private constructor(
     private proc: ChildProcess,
     private cdp: CDP,
     private dir: string,
+    private ephemeral: boolean, // the profile is ours to delete
+    readonly downloadDir: string,
     private width: number,
     private height: number,
   ) {
@@ -366,11 +381,58 @@ export class Browser {
       if (m.method === 'Target.targetDestroyed' || m.method === 'Target.detachedFromTarget') {
         if (m.params.targetId) this.onTargetClosed?.(m.params.targetId);
       }
+      if (m.method === 'Browser.downloadWillBegin') this.downloadBegan(m.params);
+      if (m.method === 'Browser.downloadProgress') this.downloadProgressed(m.params);
     });
   }
 
   /** Called when a tab closes, whether we closed it or the page did (window.close()). */
   onTargetClosed: ((targetId: string) => void) | null = null;
+  onDownload: ((e: DownloadEvent) => void) | null = null;
+
+  /** Bytes received so far of the downloads still running. */
+  downloadProgress(): { name: string; received: number; total: number }[] {
+    return [...this.downloading.values()];
+  }
+
+  private downloadBegan(p: { guid: string; url: string; suggestedFilename: string }) {
+    // The name comes from the site; keep only a plain file name.
+    const name = basename(p.suggestedFilename || 'download').replace(/[\x00-\x1f<>:"/\\|?*]/g, '_') || 'download';
+    this.downloading.set(p.guid, { name, received: 0, total: 0 });
+    this.onDownload?.({ state: 'started', guid: p.guid, name, url: p.url });
+  }
+
+  private downloadProgressed(p: { guid: string; state: string; receivedBytes: number; totalBytes: number }) {
+    const d = this.downloading.get(p.guid);
+    if (!d) return;
+    d.received = p.receivedBytes;
+    d.total = p.totalBytes;
+    if (p.state === 'inProgress') return;
+    this.downloading.delete(p.guid);
+    if (p.state !== 'completed') return this.onDownload?.({ state: 'failed', guid: p.guid, name: d.name });
+    // The browser saved it under its guid (see launch); give it its own name, without overwriting anything.
+    void this.nameDownload(p.guid, d.name).then(
+      (path) => this.onDownload?.({ state: 'done', guid: p.guid, name: basename(path), path, bytes: p.receivedBytes }),
+      () => this.onDownload?.({ state: 'failed', guid: p.guid, name: d.name }),
+    );
+  }
+
+  private async nameDownload(guid: string, name: string): Promise<string> {
+    const from = join(this.downloadDir, guid);
+    const ext = extname(name);
+    const stem = name.slice(0, name.length - ext.length);
+    let to = join(this.downloadDir, name);
+    for (let n = 2; existsSync(to); n++) to = join(this.downloadDir, `${stem} (${n})${ext}`);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        renameSync(from, to);
+        return to;
+      } catch (e) {
+        if (attempt >= 20) throw e;
+        await sleep(100); // on Windows the browser can hold the file for a moment
+      }
+    }
+  }
 
   /** Titles and addresses of the given tabs. */
   async describe(targetIds: string[]): Promise<Map<string, { title: string; url: string }>> {
@@ -391,8 +453,21 @@ export class Browser {
     width = 1280,
     height = 900,
     headless = true,
+    profile,
+    downloads = DEFAULT_DOWNLOADS,
   }: LaunchOptions = {}): Promise<Browser> {
-    const dir = mkdtempSync(join(tmpdir(), 'medley-'));
+    let dir: string;
+    if (profile) {
+      mkdirSync(profile, { recursive: true });
+      if (profileInUse(profile)) throw new Error(`the profile at ${profile} is in use by another browser`);
+      dir = profile;
+    } else {
+      dir = mkdtempSync(join(tmpdir(), 'medley-'));
+    }
+    // A kept profile still has the last run's port file; wait for this run's.
+    const portFile = join(dir, 'DevToolsActivePort');
+    rmSync(portFile, { force: true });
+    mkdirSync(downloads, { recursive: true });
     const args = [
       '--remote-debugging-port=0',
       `--user-data-dir=${dir}`,
@@ -403,6 +478,7 @@ export class Browser {
       '--disable-breakpad',
       '--disable-background-networking',
       '--disable-component-update',
+      '--hide-crash-restore-bubble',
       '--mute-audio',
       `--window-size=${width},${height}`,
       'about:blank',
@@ -411,7 +487,6 @@ export class Browser {
     const proc = spawn(executable, args, { stdio: 'ignore' });
     try {
       // Chrome writes the port it picked (and the browser endpoint path) here once it's listening.
-      const portFile = join(dir, 'DevToolsActivePort');
       const deadline = Date.now() + 15000;
       let lines: string[] = [];
       while (true) {
@@ -421,17 +496,22 @@ export class Browser {
           // not written yet, or (on Windows) still locked while Chrome writes it
         }
         if (lines.length >= 2 && lines[1]) break;
-        if (proc.exitCode !== null) throw new Error(`browser exited during startup (code ${proc.exitCode})`);
+        if (proc.exitCode !== null) {
+          const hint = profile ? '; is another browser using the profile?' : '';
+          throw new Error(`browser exited during startup (code ${proc.exitCode})${hint}`);
+        }
         if (Date.now() > deadline) throw new Error('timed out waiting for the browser to start');
         await sleep(50);
       }
       const cdp = await CDP.connect(`ws://127.0.0.1:${lines[0].trim()}${lines[1].trim()}`);
       await cdp.send('Target.setDiscoverTargets', { discover: true });
-      await cdp.send('Browser.setDownloadBehavior', { behavior: 'deny' }).catch(() => {});
-      return new Browser(proc, cdp, dir, width, height);
+      // Saved under their guid, then renamed once complete (see nameDownload), so a
+      // half-downloaded file never sits under its real name.
+      await cdp.send('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: downloads, eventsEnabled: true });
+      return new Browser(proc, cdp, dir, !profile, downloads, width, height);
     } catch (e) {
       killTree(proc);
-      await removeDir(dir);
+      if (!profile) await removeDir(dir);
       throw e;
     }
   }
@@ -458,12 +538,33 @@ export class Browser {
     await Promise.race([this.cdp.send('Browser.close').catch(() => {}), sleep(2000)]);
     this.cdp.close();
     if (!(await Promise.race([this.exited.then(() => true), sleep(5000).then(() => false)]))) killTree(this.proc);
-    await removeDir(this.dir);
+    if (this.ephemeral) await removeDir(this.dir);
   }
 
   /** Synchronous last-resort cleanup for signal handlers. */
   kill() {
     killTree(this.proc);
+  }
+}
+
+/** Whether a running browser holds this profile: Chrome locks `lockfile` (Windows) or points `SingletonLock` at its pid. */
+function profileInUse(dir: string): boolean {
+  if (process.platform === 'win32') {
+    const lock = join(dir, 'lockfile');
+    if (!existsSync(lock)) return false;
+    try {
+      rmSync(lock); // left behind by a browser that crashed
+      return false;
+    } catch {
+      return true;
+    }
+  }
+  try {
+    const pid = Number(readlinkSync(join(dir, 'SingletonLock')).split('-').pop());
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
   }
 }
 

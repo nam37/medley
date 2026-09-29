@@ -61,6 +61,11 @@
       <span id="files-out">No files chosen</span>
     </p>
     <p><button id="later">Go to the fixture shortly</button></p>
+    <p><a id="report" href="data:text/csv;charset=utf-8,fruit%2Ccount%0Aapples%2C3%0Apears%2C5%0A" download="report.csv">Download the report</a></p>
+    <p>
+      <label>Password <input type="password" id="password"></label>
+      <span id="password-out">No password yet</span>
+    </p>
 
     <section id="more"><p>Scroll down to load more.</p></section>
   </main>
@@ -118,6 +123,11 @@
       $('files-out').textContent = files.length
         ? `Got ${files.map((f) => `${f.name} (${f.size} bytes)`).join(', ')}`
         : 'No files chosen';
+    });
+
+    // Says how long the password is, never what it is.
+    $('password').addEventListener('input', (e) => {
+      $('password-out').textContent = `Password has ${e.target.value.length} characters`;
     });
 
     // Moves on by itself after the click has settled, as a "checking your browser" page does.

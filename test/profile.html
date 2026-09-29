@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Medley profile test</title>
+</head>
+<body>
+  <main>
+    <h1>Profile test</h1>
+    <!-- Counts visits in this browser profile, so a kept profile shows 2 on the next session. -->
+    <p id="visits">Not counted yet</p>
+  </main>
+  <script>
+    const n = Number(localStorage.getItem('visits') || 0) + 1;
+    localStorage.setItem('visits', String(n));
+    document.getElementById('visits').textContent = `Visits in this profile: ${n}`;
+  </script>
+</body>
+</html>

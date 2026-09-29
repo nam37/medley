@@ -11,8 +11,9 @@ import {
   TextRenderable,
   type CliRenderer,
   type KeyEvent,
+  type PasteEvent,
 } from '@opentui/core';
-import type { Reply, SessionEvent } from '../client.ts';
+import { STALE_HINT, type Reply, type SessionEvent } from '../client.ts';
 import { resolve } from 'node:path';
 import { looksLikeAddress, parseCommand, splitFlags, splitWords, toUrl } from '../commands.ts';
 import { changedLines } from '../diff.ts';
@@ -27,9 +28,11 @@ export interface Backend {
   request(cmd: string, args?: Record<string, unknown>, start?: boolean): Promise<Reply>;
   /** Follow other clients' commands; returns a function that stops following. */
   watch(onEvent: (e: SessionEvent) => void, onConnection: (connected: boolean) => void): () => void;
+  /** Whether the session runs other (older) code than this UI, so it may not know newer commands. */
+  stale?(): boolean;
 }
 
-type PromptKind = 'url' | 'field' | 'select' | 'file' | 'command' | 'find' | 'answer';
+type PromptKind = 'url' | 'field' | 'secret' | 'select' | 'file' | 'command' | 'find' | 'answer';
 interface Prompt {
   kind: PromptKind;
   label: string;
@@ -40,6 +43,7 @@ interface Prompt {
 const PROMPT_HINTS: Record<PromptKind, string> = {
   url: 'type a web address, like en.wikipedia.org · Enter opens it · Esc cancels',
   field: 'Enter types and submits · Tab types only · Esc cancels',
+  secret: 'what you type is hidden · Enter types and submits · Tab types only · Esc cancels',
   select: "type an option's text · Enter chooses it · Esc cancels",
   file: 'type file paths, quoting any with spaces · Enter chooses them · Esc cancels',
   command: 'e.g. press Escape, wait 2, scroll bottom · Enter runs it · Esc cancels',
@@ -54,7 +58,7 @@ const HINTS = 'Tab select · Enter open · o address · ← back · / find · v 
 const BADGE = ' medley ';
 const BADGE_FRAME_MS = 90;
 const BADGE_SWEEP = 2 * (BADGE.length - 1); // frames for the band to go across and back
-const FIELD_KINDS = new Set(['textbox', 'combobox']);
+const FIELD_KINDS = new Set(['textbox', 'password', 'combobox']);
 const ACTIVITY_MS = 20_000; // how long another client's action stays in the status line
 
 const HELP = [
@@ -102,6 +106,7 @@ export class App {
   private refreshQueued = false;
   private prompt: Prompt | null = null;
   private promptError = ''; // why the prompt's last input was refused
+  private secret = ''; // what's typed into a password prompt; the input only shows dots
   private quitting: 'no' | 'confirm' | 'session' = 'no'; // which quit question is showing
   private stopped = false;
   private picturesFor: string | null = null; // the document whose screenshot was asked for
@@ -164,6 +169,7 @@ export class App {
     renderer.root.add(this.help);
 
     renderer.keyInput.on('keypress', this.onKey);
+    renderer.keyInput.on('paste', this.onPaste);
     this.input.on(InputRenderableEvents.ENTER, (value: string) => this.submitPrompt(value, true));
     this.stopWatching = backend.watch(
       (e) => this.onEvent(e),
@@ -178,7 +184,8 @@ export class App {
   /** Open `url`, or else show the session's current page. */
   async start(url?: string) {
     if (url) await this.run('goto', { url }, { start: true });
-    else if (!(await this.run('snapshot', {}, { quiet: true }))) this.openPrompt({ kind: 'url', label: 'open' });
+    else if (!(await this.run('snapshot', {}, { quiet: true }))) return this.openPrompt({ kind: 'url', label: 'open' });
+    if (this.backend.stale?.()) this.say(`${STALE_HINT}: q, y, n, then start the UI again`, 'warn');
   }
 
   /** Whether a page from a running session is showing. */
@@ -196,6 +203,7 @@ export class App {
     clearInterval(this.badgeTimer);
     this.stopWatching();
     this.renderer.keyInput.off('keypress', this.onKey);
+    this.renderer.keyInput.off('paste', this.onPaste);
     this.finish();
   }
 
@@ -220,6 +228,8 @@ export class App {
       if (text.startsWith('no browser session')) {
         this.show({ dialog: null, page: null });
         this.say('no session is running; press o to open a page', 'warn');
+      } else if (text.startsWith('unknown command')) {
+        this.say(`${text}: ${STALE_HINT} (q, y, n, then start the UI again)`, 'error');
       } else {
         this.say(text.split('\n')[0], 'error');
         // Refs went stale under us (another client navigated); catch up.
@@ -244,8 +254,10 @@ export class App {
     const lines = reply.text.split('\n');
     const notes = lines.filter((l) => l.startsWith('note: ')).map((l) => l.slice(6));
     let summary = cmd === 'goto' ? '' : cmd === 'snapshot' ? 'refreshed' : lines[0];
-    if (cmd === 'status' || cmd === 'stop') summary = reply.text;
-    this.say([summary, ...notes].filter(Boolean).join(' · '), 'ok');
+    if (cmd === 'status' || cmd === 'stop' || cmd === 'downloads') summary = reply.text.replaceAll('\n', ' · ');
+    // A download is the news when there is one: first, so a narrow status line keeps where it went.
+    const download = (n: string) => /^(downloaded|still downloading|the download)/.test(n);
+    this.say([...notes.filter(download), summary, ...notes.filter((n) => !download(n))].filter(Boolean).join(' · '), 'ok');
   }
 
   private show(view: View) {
@@ -288,7 +300,9 @@ export class App {
   private activate(ref: PageRef) {
     this.page.select(ref.ref);
     const label = `[${ref.ref}${ref.kind === 'link' ? '' : ` ${ref.kind}`}${ref.name ? ` "${ref.name}"` : ''}]`;
-    if (FIELD_KINDS.has(ref.kind)) {
+    if (ref.kind === 'password') {
+      this.openPrompt({ kind: 'secret', ref: ref.ref, label: `type into ${label}` });
+    } else if (FIELD_KINDS.has(ref.kind)) {
       const value = ref.value === '********' ? '' : (ref.value ?? '');
       this.openPrompt({ kind: 'field', ref: ref.ref, label: `type into ${label}` }, value);
     } else if (ref.kind === 'select') {
@@ -317,13 +331,17 @@ export class App {
     this.promptLabel.visible = true;
     this.input.visible = true;
     this.hints.visible = false;
-    this.input.value = initial;
-    this.input.focus();
+    this.secret = '';
+    this.input.value = prompt.kind === 'secret' ? '' : initial;
+    // A password prompt keeps its text itself (see secretKey); the input only shows dots.
+    if (prompt.kind === 'secret') this.input.blur();
+    else this.input.focus();
     this.draw();
   }
 
   private closePrompt() {
     this.prompt = null;
+    this.secret = '';
     this.input.blur();
     this.input.visible = false;
     this.promptLabel.visible = false;
@@ -349,6 +367,7 @@ export class App {
         break;
       }
       case 'field':
+      case 'secret':
         void this.run('type', { ref: prompt.ref, text: value, submit: enter });
         break;
       case 'select':
@@ -398,6 +417,10 @@ export class App {
 
   private onKey = (key: KeyEvent) => {
     if (key.ctrl && key.name === 'c') return this.quit();
+    if (this.prompt?.kind === 'secret') {
+      key.preventDefault();
+      return this.secretKey(key);
+    }
     if (this.prompt) {
       // Everything else goes to the input; Enter arrives as its ENTER event.
       if (key.name === 'escape') {
@@ -420,6 +443,25 @@ export class App {
     if (this.dialog && this.dialogKey(key)) return;
     if (this.digitKey(key)) return;
     this.browseKey(key);
+  };
+
+  /** Keys for a password prompt, which never hands its text to the visible input. */
+  private secretKey(key: KeyEvent) {
+    if (key.name === 'escape') return this.cancelPrompt();
+    if (key.name === 'return' || key.name === 'enter') return this.submitPrompt(this.secret, true);
+    if (key.name === 'tab') return this.submitPrompt(this.secret, false);
+    if (key.name === 'backspace') this.secret = [...this.secret].slice(0, -1).join('');
+    else if (key.ctrl && key.name === 'u') this.secret = '';
+    else if (!key.ctrl && !key.meta && key.sequence && !/[\u0000-\u001f\u007f]/.test(key.sequence)) this.secret += key.sequence;
+    else return;
+    this.input.value = '•'.repeat([...this.secret].length);
+  }
+
+  private onPaste = (e: PasteEvent) => {
+    if (this.prompt?.kind !== 'secret') return; // other prompts' input handles its own pastes
+    e.preventDefault();
+    this.secret += new TextDecoder().decode(e.bytes).replace(/[\r\n]+/g, '');
+    this.input.value = '•'.repeat([...this.secret].length);
   };
 
   private dialogKey(key: KeyEvent): boolean {

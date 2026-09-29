@@ -1,5 +1,5 @@
 import { createCliRenderer } from '@opentui/core';
-import { request, watch, type StartOptions } from '../client.ts';
+import { request, sessionIsStale, watch, type StartOptions } from '../client.ts';
 import { App, type Backend } from './app.ts';
 
 /** A backend that talks to the named session daemon (starting it when asked). */
@@ -14,6 +14,7 @@ export function sessionBackend(session: string, start: StartOptions): Backend {
       void watch(session, onEvent, abort.signal, onConnection);
       return () => abort.abort();
     },
+    stale: () => sessionIsStale(session),
   };
 }
 

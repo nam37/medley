@@ -97,6 +97,7 @@ export function parseCommand([command, ...rest]: string[], flags: CommandFlags =
       return { cmd: 'upload', args: { ref: rest[0], files: rest.slice(1).map((f) => resolve(f)) } };
     case 'back':
     case 'forward':
+    case 'downloads':
     case 'status':
     case 'stop':
       return { cmd: command, args: {} };

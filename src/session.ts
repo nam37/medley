@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Browser, sleep, type Dialog, type LaunchOptions, type Page } from './browser.ts';
+import { Browser, sleep, type Dialog, type DownloadEvent, type LaunchOptions, type Page } from './browser.ts';
 import { diffLines } from './diff.ts';
 import { parseKey } from './keys.ts';
 import { renderParts, type LayoutGroup, type PageModel, type Visual } from './render.ts';
@@ -60,6 +60,16 @@ export interface View {
   } | null;
 }
 
+/** 812 B, 1.2 kB, 3.4 MB */
+function size(bytes: number): string {
+  if (bytes < 1000) return `${bytes} B`;
+  if (bytes < 1e6) return `${(bytes / 1e3).toFixed(1)} kB`;
+  if (bytes < 1e9) return `${(bytes / 1e6).toFixed(1)} MB`;
+  return `${(bytes / 1e9).toFixed(2)} GB`;
+}
+
+const progress = (received: number, total: number) => (total ? `${size(received)} of ${size(total)}` : `${size(received)} so far`);
+
 const fullText = (s: Snap, links = false) =>
   [...s.header, '', ...s.body, ...(links && s.links.length ? ['', '── links ──', ...s.links] : [])].join('\n');
 
@@ -73,12 +83,16 @@ export class Session {
   private openers = new Map<Page, Page>(); // the tab each popup came from, to return to when it closes
   private acting = 0; // commands running now; a navigation they cause is theirs to report
   private changePending = false;
+  private downloads: { name: string; path: string; bytes: number }[] = []; // finished, in order
+  private downloadsStarted = 0; // how many downloads have begun, to tell which ones an action started
+  private downloadsRunning = new Set<string>();
   /**
-   * Called when the current tab loads a new document by itself, outside any
-   * command (a redirect after a "checking your browser" page, a meta refresh,
-   * a sign-in that finishes), once it has settled, with the page's address.
+   * Called with news from outside any command, for clients following along:
+   * the current tab loaded a new document by itself (a redirect after a
+   * "checking your browser" page, a meta refresh, a sign-in that finishes)
+   * and has settled, or a download finished.
    */
-  onPageChange: ((url: string) => void) | null = null;
+  onNews: ((kind: 'navigated' | 'download', summary: string) => void) | null = null;
 
   private constructor(
     private browser: Browser,
@@ -87,6 +101,7 @@ export class Session {
     this.tabs = [page];
     this.watch(page);
     browser.onTargetClosed = (targetId) => this.tabClosed(targetId);
+    browser.onDownload = (e) => this.downloaded(e);
   }
 
   static async start(opts: LaunchOptions = {}): Promise<Session> {
@@ -106,7 +121,22 @@ export class Session {
 
   goto(client: string, url: string, { links = false } = {}): Promise<string> {
     if (this.dialog) this.answerQuietly();
-    return this.act(client, `opened ${url}`, () => this.page.goto(url), { full: true }).then((text) =>
+    const outcome: Outcome = { full: true };
+    let what = `opened ${url}`;
+    const open = async () => {
+      const before = this.downloadsStarted;
+      try {
+        await this.page.goto(url);
+      } catch (e) {
+        // An address that serves a file downloads it instead of opening a page,
+        // which stays as it was: report it like an action, not a new page.
+        await sleep(300);
+        if (this.downloadsStarted === before || !/ERR_ABORTED/.test((e as Error).message)) throw e;
+        outcome.full = false;
+        what = `opened ${url}: it's a file, so it was downloaded`;
+      }
+    };
+    return this.act(client, () => what, open, outcome).then((text) =>
       links ? `${text}\n\n── links ──\n${this.baselines.get(client)!.links.join('\n')}` : text,
     );
   }
@@ -289,6 +319,14 @@ export class Session {
     return this.report(client, `closed tab ${i + 1}; now in tab ${this.tabs.indexOf(this.page) + 1}`);
   }
 
+  /** What this session has downloaded, and where. */
+  downloadList(): string {
+    const running = this.browser.downloadProgress().map((d) => `  downloading ${d.name} (${progress(d.received, d.total)})`);
+    if (!this.downloads.length && !running.length) return `nothing downloaded yet; downloads go to ${this.browser.downloadDir}`;
+    const done = this.downloads.map((d, i) => `${i + 1}. ${d.name} · ${size(d.bytes)} · ${d.path}`);
+    return [...done, ...running].join('\n');
+  }
+
   private tabCount(): string {
     return this.tabs.length === 1 ? 'there is 1 tab' : `there are ${this.tabs.length} tabs`;
   }
@@ -380,6 +418,33 @@ export class Session {
     };
   }
 
+  private downloaded(e: DownloadEvent) {
+    if (e.state === 'started') {
+      this.downloadsStarted++;
+      this.downloadsRunning.add(e.guid);
+      return;
+    }
+    this.downloadsRunning.delete(e.guid);
+    let news: string;
+    if (e.state === 'done') {
+      this.downloads.push({ name: e.name, path: e.path, bytes: e.bytes });
+      news = `downloaded ${e.name} (${size(e.bytes)}) to ${e.path}`;
+    } else {
+      news = `the download of ${e.name} failed or was canceled`;
+    }
+    this.notes.push(news); // reported with the next result, whoever asks
+    if (!this.acting) this.onNews?.('download', news);
+  }
+
+  /** Wait (up to `ms`) for running downloads; say how far any still-running one got. */
+  private async downloadsFinish(ms: number) {
+    const until = Date.now() + ms;
+    while (this.downloadsRunning.size && Date.now() < until) await sleep(100);
+    for (const d of this.browser.downloadProgress()) {
+      this.notes.push(`still downloading ${d.name} (${progress(d.received, d.total)}); it will be noted when done`);
+    }
+  }
+
   /** The page navigated by itself: let it settle (it may redirect again), then say so, once. */
   private async pageChanged(page: Page) {
     if (this.changePending) return;
@@ -387,7 +452,7 @@ export class Session {
     try {
       await page.settle();
       if (page !== this.page || page.closed || this.acting || this.dialog) return;
-      this.onPageChange?.(await page.evaluate<string>('location.href'));
+      this.onNews?.('navigated', `the page loaded ${await page.evaluate<string>('location.href')} by itself`);
     } catch {
       // the tab closed or navigated again mid-look; a later navigation or command catches up
     } finally {
@@ -428,9 +493,11 @@ export class Session {
       this.dialogWaiters.add(wake);
     });
     const page = this.page;
+    const downloadsBefore = this.downloadsStarted;
     const work = (async () => {
       await action();
       await page.settle();
+      if (this.downloadsStarted > downloadsBefore) await this.downloadsFinish(30_000);
     })();
     work.catch(() => {}); // if a dialog wins the race, this ends (or fails) in the background
     try {

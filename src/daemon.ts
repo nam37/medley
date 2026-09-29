@@ -7,7 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { removeSessionInfo, writeSessionInfo, type Command, type SessionEvent } from './client.ts';
+import { codeStamp, removeSessionInfo, writeSessionInfo, type Command, type SessionEvent } from './client.ts';
 import { Session } from './session.ts';
 
 const IDLE_MS = 30 * 60_000;
@@ -20,10 +20,13 @@ const flag = (name: string) => {
 };
 const name = flag('--name') ?? 'default';
 
+const profile = flag('--profile');
 const session = await Session.start({
   headless: !argv.includes('--headed'),
   executable: flag('--browser'),
   width: Number(flag('--width')) || undefined,
+  profile,
+  downloads: flag('--downloads'),
 });
 const token = randomUUID();
 const watchers = new Set<(chunk: string) => void>();
@@ -98,6 +101,7 @@ function summarize({ cmd, args }: Command, text: string): string {
   if (cmd === 'snapshot') return 'looked at the page';
   if (cmd === 'screenshot') return 'took a screenshot';
   if (cmd === 'tabs') return 'listed the tabs';
+  if (cmd === 'downloads') return 'listed the downloads';
   return text.split('\n')[0];
 }
 
@@ -167,8 +171,10 @@ async function dispatch({ cmd, args = {} }: Command, client: string): Promise<st
       return session.answer(client, args.action === 'accept', args.text === undefined ? undefined : String(args.text));
     case 'screenshot':
       return JSON.stringify(await session.screenshot()); // for the terminal UI's pictures
+    case 'downloads':
+      return session.downloadList();
     case 'status':
-      return `${await session.status()} · session "${name}", pid ${process.pid}`;
+      return `${await session.status()} · session "${name}", pid ${process.pid}${profile ? ` · profile ${profile}` : ''}`;
     case 'stop':
       return `stopped session "${name}"`;
     default:
@@ -192,9 +198,13 @@ async function shutdown() {
 
 // A page that moves on by itself (a redirect after a browser check, a meta
 // refresh) is news to anyone watching: the terminal UI redraws on it.
-session.onPageChange = (url) => announce({ client: 'page', cmd: 'navigated', ok: true, summary: `the page loaded ${url} by itself` });
+// News from outside any command (a page that moves on by itself, a download
+// that finishes later) goes to anyone watching: the terminal UI redraws on it.
+session.onNews = (cmd, summary) => announce({ client: 'page', cmd, ok: true, summary });
 
-writeSessionInfo(name, { pid: process.pid, port: server.port!, token, startedAt: Date.now() });
+// `code` says which medley this is, so a client started from newer code can
+// tell the session is out of date (and lacks newer commands).
+writeSessionInfo(name, { pid: process.pid, port: server.port!, token, startedAt: Date.now(), code: codeStamp() });
 resetIdle();
 session.exited.then(shutdown); // the browser closed or crashed
 process.on('SIGINT', shutdown);

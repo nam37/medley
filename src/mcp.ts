@@ -10,7 +10,8 @@ const REF = { type: 'integer', description: 'The number of an element in the lat
 const INSTRUCTIONS = `Medley is a text-mode web browser. Pages come back as text: headings (#),
 lists, tables, and "── nav ──"-style dividers for page regions. Every interactive
 element has a number, its ref: [7]Docs is a link, [8 button "Save"] or
-[9 textbox "Email" = "ada@example.com" focused] are other controls. Pass the number
+[9 textbox "Email" = "ada@example.com" focused] are other controls (a password field
+is [10 password "Password"], its value masked). Pass the number
 as \`ref\` to act on it. After an action you get only what changed, as diff hunks
 ("- " old line, "+ " new line) under the region they belong to; a new page comes
 back in full. Refs stay valid until the page navigates.`;
@@ -98,6 +99,13 @@ const TOOLS: Tool[] = [
     description:
       "Reload the page, as a browser's refresh button does, and return it. With hard=true, bypass the cache. To see what a page changed on its own without reloading it, use browser_wait.",
     inputSchema: { type: 'object', properties: { hard: { type: 'boolean' } } },
+  },
+  {
+    name: 'browser_downloads',
+    cmd: 'downloads',
+    description:
+      'List the files this session downloaded, with their paths. Clicking a download link (or opening a file address) saves the file and says where in the result.',
+    inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'browser_tabs',

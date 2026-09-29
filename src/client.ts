@@ -3,7 +3,8 @@
 // user can read it, and every request has to carry the token.
 
 import { spawn } from 'node:child_process';
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,12 +36,15 @@ export interface SessionInfo {
   port: number;
   token: string;
   startedAt: number;
+  code?: string; // see codeStamp; missing from sessions started before it existed
 }
 
 export interface StartOptions {
   headed?: boolean;
   browser?: string;
   width?: number;
+  profile?: string; // a browser profile directory to keep between sessions
+  downloads?: string; // where downloads go
 }
 
 const DIR = join(homedir(), '.medley');
@@ -65,6 +69,32 @@ export function writeSessionInfo(name: string, info: SessionInfo) {
 export function removeSessionInfo(name: string) {
   rmSync(infoFile(name), { force: true });
 }
+
+let stamp: string | undefined;
+
+/** A short hash of medley's own source, so a session started by other (older) code can be told apart. */
+export function codeStamp(): string {
+  if (stamp) return stamp;
+  const hash = createHash('sha1');
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (/\.(ts|js)$/.test(entry.name)) hash.update(entry.name).update(readFileSync(path));
+    }
+  };
+  walk(fileURLToPath(new URL('.', import.meta.url)));
+  return (stamp = hash.digest('hex').slice(0, 12));
+}
+
+/** Whether the named session is running code other than this medley's (so it may lack newer commands). */
+export function sessionIsStale(name: string): boolean {
+  const info = readSessionInfo(name);
+  return !!info && info.code !== codeStamp();
+}
+
+/** What to say when a session doesn't know a command: it was started by an older medley. */
+export const STALE_HINT = 'this session was started by an older medley; restart it to use newer commands';
 
 class Unreachable extends Error {}
 
@@ -161,6 +191,8 @@ async function startDaemon(name: string, opts: StartOptions): Promise<SessionInf
   if (opts.headed) args.push('--headed');
   if (opts.browser) args.push('--browser', opts.browser);
   if (opts.width) args.push('--width', String(opts.width));
+  if (opts.profile) args.push('--profile', opts.profile);
+  if (opts.downloads) args.push('--downloads', opts.downloads);
   const log = openSync(logFile(name), 'a');
   const child = spawn(process.execPath, args, { detached: true, stdio: ['ignore', log, log], windowsHide: true });
   child.unref();
@@ -170,7 +202,14 @@ async function startDaemon(name: string, opts: StartOptions): Promise<SessionInf
   while (Date.now() < deadline) {
     const info = readSessionInfo(name);
     if (info) return info;
-    if (child.exitCode !== null) throw new Error(`the session failed to start; see ${logFile(name)}`);
+    if (child.exitCode !== null) {
+      // The daemon's last error says why (a browser that won't start, a profile in use).
+      let why = '';
+      try {
+        why = readFileSync(logFile(name), 'utf8').match(/^error: (.*)$/gm)?.pop()?.slice(7) ?? '';
+      } catch {}
+      throw new Error(`the session failed to start${why ? `: ${why}` : ''}; see ${logFile(name)}`);
+    }
     await sleep(100);
   }
   throw new Error(`timed out starting the session; see ${logFile(name)}`);

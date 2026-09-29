@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
-import { send } from './client.ts';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { send, STALE_HINT } from './client.ts';
 import { colorize } from './color.ts';
 import { parseCommand, toUrl, UsageError } from './commands.ts';
 import { serveMcp } from './mcp.ts';
@@ -23,6 +25,7 @@ session commands:
   upload <ref> <file>...          choose files for a file field, as if picked in its dialog
   reload [--hard]                 reload the page (--hard: bypass the cache)
   back, forward
+  downloads                       list what this session downloaded, and where
   tabs                            list open tabs (links can open new ones)
   tab <number>                    switch to a tab
   close-tab [number]              close a tab (the current one by default)
@@ -39,6 +42,10 @@ other commands:
 
 options:
   --session <name>   use a named session (default: "default", or MEDLEY_SESSION)
+  --profile <name>   start the session with a kept browser profile, so logins and
+                     cookies last between sessions (or MEDLEY_PROFILE); one
+                     session at a time can use a profile
+  --downloads <dir>  where the session saves downloads (default ~/Downloads/medley)
   --headed           start the session with a visible browser window
   --links            list link targets after a full snapshot
   --color, --no-color  force ANSI color on or off (default: on for terminals)
@@ -68,6 +75,8 @@ const opts = {
   color:!!process.stdout.isTTY && !process.env.NO_COLOR,
   width: undefined as number | undefined,
   browser: undefined as string | undefined,
+  profile: process.env.MEDLEY_PROFILE || undefined,
+  downloads: undefined as string | undefined,
 };
 const words: string[] = [];
 const argv = process.argv.slice(2);
@@ -85,6 +94,8 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--no-color') opts.color = false;
   else if (a === '--width') opts.width = Number(value()) || fail('--width must be a number');
   else if (a === '--browser') opts.browser = value();
+  else if (a === '--profile') opts.profile = value();
+  else if (a === '--downloads') opts.downloads = resolve(value());
   else if (a === '-h' || a === '--help') {
     process.stdout.write(USAGE);
     process.exit(0);
@@ -92,13 +103,21 @@ for (let i = 0; i < argv.length; i++) {
   else words.push(a);
 }
 if (!/^[\w-]+$/.test(opts.session)) fail('session names may use letters, digits, - and _');
+if (opts.profile && !/^[\w-]+$/.test(opts.profile)) fail('profile names may use letters, digits, - and _');
+const profileDir = opts.profile ? join(homedir(), '.medley', 'profiles', opts.profile) : undefined;
 
 const [command, ...rest] = words;
 const client = process.env.MEDLEY_CLIENT || 'cli';
-const start = { headed: opts.headed, browser: opts.browser, width: opts.width };
+const start = { headed: opts.headed, browser: opts.browser, width: opts.width, profile: profileDir, downloads: opts.downloads };
 
 async function oneShot(url: string) {
-  const session = await Session.start({ executable: opts.browser, width: opts.width, headless: !opts.headed });
+  const session = await Session.start({
+    executable: opts.browser,
+    width: opts.width,
+    headless: !opts.headed,
+    profile: profileDir,
+    downloads: opts.downloads,
+  });
   process.on('SIGINT', () => process.exit(130));
   try {
     const text = await session.goto('one-shot', toUrl(url), { links: opts.links });
@@ -132,6 +151,9 @@ if (!command) {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'EPIPE') process.exit(0);
     if (e instanceof UsageError) fail(`${e.message}\n\n${USAGE}`, 2);
-    fail((e as Error).message);
+    const message = (e as Error).message;
+    // parseCommand knew the command, so it's the session that's behind.
+    if (message.startsWith('unknown command')) fail(`${message}: ${STALE_HINT} (medley stop, then run it again)`);
+    fail(message);
   }
 }

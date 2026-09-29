@@ -5,7 +5,7 @@
 
 import { TextAttributes } from '@opentui/core';
 import { createTestRenderer } from '@opentui/core/testing';
-import { writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -19,7 +19,10 @@ const SESSION = 'tui-smoke';
 const url = pathToFileURL(join(import.meta.dir, 'app.html')).href;
 const setup = await createTestRenderer({ width: 100, height: 24 });
 const { mockInput, mockMouse } = setup;
-const app = new App(setup.renderer, sessionBackend(SESSION, {}));
+// Downloads go to a scratch folder, not the real ~/Downloads/medley.
+const downloads = join(tmpdir(), 'medley-smoke-downloads');
+rmSync(downloads, { recursive: true, force: true });
+const app = new App(setup.renderer, sessionBackend(SESSION, { downloads }));
 
 async function waitFor(s: Setup, what: string, test: (frame: string) => boolean, ms = 20000): Promise<string> {
   const deadline = Date.now() + ms;
@@ -101,6 +104,23 @@ try {
   show('w waits for the page, saying so', working);
   await until('the wait to end', (f) => f.includes('waited 2s'));
   console.log(`\nthe badge while working: ${during > 1 ? `animated (${during} shades)` : 'still (bad)'}; after: ${badgeShades() === 1 ? 'still' : 'animated (bad)'}`);
+
+  // A password field's prompt shows dots, never what's typed.
+  await keys('1', '6');
+  mockInput.pressEnter();
+  await until('the password prompt', (f) => f.includes('type into [16 password'));
+  await mockInput.typeText('hunter2');
+  const masked = await until('the dots', (f) => f.includes('•••••••'));
+  console.log(`\nthe password prompt shows ${masked.includes('hunter2') ? 'the password (bad)' : 'only dots'}`);
+  mockInput.pressEnter();
+  show('16, Enter, a password: typed, never shown', await until('the password', (f) => f.includes('Password has 7 characters')));
+
+  // A download link saves the file and says where.
+  await keys('1', '5');
+  mockInput.pressEnter();
+  show('15, Enter: a download link says where the file went', await until('the download', (f) => f.includes('downloaded report.csv')));
+  const saved = join(downloads, 'report.csv');
+  console.log(`\nthe download: ${existsSync(saved) ? `saved, ${readFileSync(saved, 'utf8').split('\n').length - 1} lines` : 'missing (bad)'}`);
 
   mockInput.pressKey(':');
   await mockInput.typeText('scroll bottom');

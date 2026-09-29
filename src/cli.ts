@@ -1,11 +1,14 @@
 #!/usr/bin/env bun
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { saveScreenshot, send, STALE_HINT } from './client.ts';
+import { readSessionInfo, saveScreenshot, send, STALE_HINT } from './client.ts';
 import { colorize } from './color.ts';
 import { parseCommand, toUrl, UsageError } from './commands.ts';
 import { serveMcp } from './mcp.ts';
+import { parseScript, replay, replaySummary, stepLines, toPlaywright } from './script.ts';
 import { Session } from './session.ts';
+import { watchFiles } from './watch.ts';
 
 const USAGE = `usage: medley <command> [args] [options]
 
@@ -30,7 +33,8 @@ session commands:
   drag <ref> <ref|text>           drag an element onto another, or onto a drop zone's text
   scroll [down|up|top|bottom|<ref>]
   upload <ref> <file>...          choose files for a file field, as if picked in its dialog
-  reload [--hard]                 reload the page (--hard: bypass the cache)
+  reload [--hard] [--diff]        reload the page (--hard: bypass the cache; --diff: only what
+                                  changed, for a page you're editing)
   back, forward
   history [n]                     list this tab's pages, or go to the n-th
   downloads                       list what this session downloaded, and where
@@ -49,6 +53,13 @@ session commands:
   extract table <n> [--csv]       one table as JSON rows (or CSV); extract items <n> for a run of items
   console [--all]                 the errors and warnings the page logged (--all: every message)
   network [--all]                 the page's failed requests (--all: every request)
+  audit [--json]                  check the page's accessibility: pictures without text, controls
+                                  without names, too little contrast, mouse-only controls, …
+  expect <text>                   check the text is on the page (waiting up to 5s), or fail
+  expect --gone <text>            check it isn't; in a script, these are its checks
+  record start [file]             write down what's done in this session, as a script of commands
+                                  that name what they act on (default ~/.medley/recordings/…)
+  record stop | status            stop, and print the script; or say how far it's got
   info [--json]                   page info: the connection and its certificate, cookies and site
                                   data, what the page says about itself, what loading it took
   clear-site-data                 delete the page's site's cookies and stored data (signs you out there)
@@ -61,6 +72,11 @@ session commands:
   status, stop
 
 other commands:
+  replay <script> [--verbose]     do a recorded script's steps again, stopping at the first that
+                                  fails (with exit status 1); \${NAME} in it comes from the environment
+  playwright <script>             print the script as a Playwright test
+  watch [dir] [--hot]             reload the page when files in dir (default .) change, and say how
+                                  its text changed (--hot: the dev server updates the page itself)
   tui [url]                       browse the session in a full-screen terminal UI
   snapshot <url> [--json]         one-off: open the page in a fresh browser, print it, exit
                                   (--json: print the raw page model instead)
@@ -76,6 +92,7 @@ options:
   --links            list link targets after a full snapshot
   --outline          with goto or search: the new page's outline instead of all of it
   --max <chars>      a result longer than this comes back as the page's outline instead
+  --verbose          with replay: every step's whole result
   --color, --no-color  force ANSI color on or off (default: on for terminals)
   --width <px>       viewport width when starting a browser (default 1280)
   --browser <path>   Chrome/Edge executable (or MEDLEY_BROWSER)
@@ -111,7 +128,9 @@ const opts = {
   csv: false,
   max: undefined as number | undefined,
   json: false,
-  color:!!process.stdout.isTTY && !process.env.NO_COLOR,
+  verbose: false,
+  hot: false,
+  color: !!process.stdout.isTTY && !process.env.NO_COLOR,
   width: undefined as number | undefined,
   browser: undefined as string | undefined,
   profile: process.env.MEDLEY_PROFILE || undefined,
@@ -140,6 +159,8 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--csv') opts.csv = true;
   else if (a === '--max') opts.max = Number(value()) || fail('--max must be a number of characters');
   else if (a === '--json') opts.json = true;
+  else if (a === '--verbose') opts.verbose = true;
+  else if (a === '--hot') opts.hot = true;
   else if (a === '--color') opts.color = true;
   else if (a === '--no-color') opts.color = false;
   else if (a === '--width') opts.width = Number(value()) || fail('--width must be a number');
@@ -177,6 +198,23 @@ async function oneShot(url: string) {
   }
 }
 
+/** medley replay: a script's steps, each printed as it's done; false if one failed. */
+async function replayScript(file: string): Promise<boolean> {
+  const path = resolve(file);
+  const steps = parseScript(readFileSync(path, 'utf8'));
+  if (!steps.length) fail(`${file} has no steps`);
+  const paint = (line: string) =>
+    !opts.color ? line : line.startsWith('✓') ? `\x1b[32m✓\x1b[39m${line.slice(1)}` : line.startsWith('✗') ? `\x1b[31m${line}\x1b[39m` : `\x1b[2m${line}\x1b[22m`;
+  const results = await replay(opts.session, steps, {
+    client: 'replay',
+    start,
+    vars: process.env,
+    onStep: (r, i) => process.stdout.write(stepLines(r, i + 1, { verbose: opts.verbose }).map(paint).join('\n') + '\n'),
+  });
+  process.stdout.write(`${replaySummary(results, steps.length, file)}\n`);
+  return results.every((r) => r.ok);
+}
+
 async function run(): Promise<string> {
   if (command === 'snapshot' && rest[0]) return oneShot(rest[0]);
   const { cmd, args, start: starts } = parseCommand(words, opts);
@@ -192,6 +230,25 @@ if (!command) {
   process.exit(2);
 } else if (command === 'mcp') {
   await serveMcp(opts.session, start);
+} else if (command === 'replay' || command === 'playwright') {
+  if (!rest[0]) fail(`usage: medley ${command} <script>`, 2);
+  try {
+    if (command === 'playwright') process.stdout.write(toPlaywright(parseScript(readFileSync(resolve(rest[0]), 'utf8')), rest[0]));
+    else if (!(await replayScript(rest[0]))) process.exit(1);
+  } catch (e) {
+    fail((e as Error).message);
+  }
+} else if (command === 'watch') {
+  if (!readSessionInfo(opts.session)) fail('no browser session is running; open the page first: medley goto http://localhost:3000');
+  const dir = resolve(rest[0] ?? '.');
+  await watchFiles({
+    session: opts.session,
+    dir,
+    hot: opts.hot,
+    client: 'watch',
+    print: (text) => process.stdout.write((opts.color ? colorize(text) : text) + '\n'),
+  }).catch((e) => fail((e as Error).message));
+  process.exit(0);
 } else if (command === 'tui') {
   // Loaded only here, so other commands don't pay for OpenTUI's native library.
   const { runTui } = await import('./tui/main.ts');
@@ -200,7 +257,7 @@ if (!command) {
   try {
     const text = await run();
     // Page info and a page's source aren't page text: printed as they are, for reading, saving or piping.
-    const plain = opts.json || ['source', 'info', 'console', 'network', 'extract'].includes(command);
+    const plain = opts.json || ['source', 'info', 'console', 'network', 'extract', 'audit', 'record', 'expect'].includes(command);
     process.stdout.write((opts.color && !plain ? colorize(text) : text) + '\n');
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'EPIPE') process.exit(0);

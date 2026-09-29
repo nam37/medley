@@ -17,6 +17,7 @@ import {
   type PasteEvent,
 } from '@opentui/core';
 import { saveScreenshot, STALE_HINT, type Reply, type SessionEvent } from '../client.ts';
+import type { RecordingStatus } from '../script.ts';
 import type { TalkEvent } from '../talk.ts';
 import { resolve } from 'node:path';
 import { addBookmark, readBookmarks, removeBookmark } from '../bookmarks.ts';
@@ -71,7 +72,7 @@ const PROMPT_HINTS: Record<PromptKind, string> = {
   secret: 'what you type is hidden · Enter types and submits · Tab types only · Esc cancels',
   select: "type an option's text · Enter chooses it · Esc cancels",
   file: 'type file paths, quoting any with spaces · Enter chooses them · Esc cancels',
-  command: 'e.g. press Escape, wait 2, scroll bottom · Enter runs it · Esc cancels',
+  command: 'e.g. press Escape, wait 2, audit, record start · Enter runs it · Esc cancels',
   find: 'Enter finds · Esc cancels',
   answer: 'Enter answers · Esc dismisses the dialog',
   tell: 'the agent gets this with its next step · Enter sends · Esc cancels',
@@ -80,6 +81,9 @@ const PROMPT_HINTS: Record<PromptKind, string> = {
 
 type Tone = 'info' | 'ok' | 'warn' | 'error' | 'agent';
 const TONE = { info: THEME.text, ok: THEME.ok, warn: THEME.warn, error: THEME.error, agent: THEME.agent };
+
+// Commands whose result is a report to read, shown in a box: what the box is called.
+const REPORTS: Record<string, string> = { audit: 'accessibility', console: 'console', network: 'network', extract: 'data', record: 'the script' };
 
 const HINTS = 'Tab select · Enter open · l refs · o address · ← back · / find · v grid · ? keys · q quit';
 const BADGE = ' medley ';
@@ -102,6 +106,8 @@ const HELP = [
   '← b, → f           back, forward',
   '/, then n N        find text, then the next or previous match',
   ':                  run a command: press Escape, wait 2, select 6 High, …',
+  "                   audit checks accessibility; console, network: the page's errors;",
+  '                   record start … record stop writes down what you do, to replay',
   'l, or click N refs  the page’s refs in a list: type to filter, Enter opens',
   't                  open the selected link in a new tab',
   'T, or click tab 2/3 the open tabs: a number, then Enter switches (d closes)',
@@ -144,6 +150,7 @@ export class App {
   private lastKeyAt = 0; // when you last pressed a key (to follow the agent only when you're not busy)
   private readerOn = false; // reader mode (m): articles show just their main text
   private readerFound = false; // and this page has main text to show
+  private recording: RecordingStatus | null = null; // a script being recorded in the session (see script.ts)
   private pages: BoxRenderable; // the bookmarks-and-history list (B)
   private pagesText: TextRenderable;
   private refsBox: BoxRenderable; // the refs pull-down (l, or a click on "N refs")
@@ -425,6 +432,12 @@ export class App {
     }
     if (quiet) return;
     if (cmd === 'screenshot') return this.say(saveScreenshot(reply.text, args.path as string | undefined), 'ok');
+    // Reports of more than a line go in a box over the page, as page info does.
+    const report = REPORTS[cmd];
+    if (report && (cmd !== 'record' || args.action === 'stop')) {
+      this.showInfo(reply.text, ` ${report} · any key closes `, cmd === 'audit' ? (l) => /^(audit:|problems|warnings)/.test(l) : (_, i) => i === 0);
+      return this.say(reply.text.split('\n')[0], 'ok');
+    }
     const lines = reply.text.split('\n');
     const notes = lines.filter((l) => l.startsWith('note: ')).map((l) => l.slice(6));
     let summary = cmd === 'goto' ? '' : cmd === 'snapshot' ? 'refreshed' : lines[0];
@@ -436,6 +449,7 @@ export class App {
 
   private show(view: View) {
     this.dialog = view.dialog;
+    if (view.recording !== undefined) this.recording = view.recording;
     if (view.tabs) this.tabs = view.tabs;
     const page = view.page;
     if (!page) {
@@ -457,6 +471,10 @@ export class App {
   }
 
   private onEvent(e: SessionEvent) {
+    if (e.recording !== undefined && JSON.stringify(e.recording) !== JSON.stringify(this.recording)) {
+      this.recording = e.recording;
+      this.drawTop();
+    }
     if (e.talk) return this.onTalk(e.talk);
     if (e.client === this.backend.client || e.client.startsWith('tui-')) {
       if (e.client !== this.backend.client) this.onOther(e);
@@ -469,7 +487,7 @@ export class App {
 
   /** Another client did something: say so, and look at the page again. */
   private onOther(e: SessionEvent) {
-    const looking = ['snapshot', 'status', 'screenshot', 'pictures', 'tabs', 'info', 'source', 'find', 'console', 'network', 'extract'];
+    const looking = ['snapshot', 'status', 'screenshot', 'pictures', 'tabs', 'info', 'source', 'find', 'console', 'network', 'extract', 'audit', 'expect'];
     if (looking.includes(e.cmd) || e.starting) return;
     if (e.summary.startsWith('listed the ')) return; // history, downloads: nothing on the page changed
     const who = e.client.startsWith('mcp') ? 'agent' : e.client;
@@ -1261,19 +1279,29 @@ export class App {
     return this.infoSite ? ` page info · c clears the cookies and data of ${this.infoSite} · Esc closes ` : ' page info · Esc closes ';
   }
 
-  private showInfo(text: string, title: string) {
-    const lines = text.split('\n');
+  /** Text in the box over the page; `heading` says which lines are headings (by default, those not indented). */
+  private showInfo(text: string, title: string, heading = (l: string, _i: number) => !l.startsWith(' ') && l !== 'looking…') {
+    let lines = text.split('\n');
+    // As tall as its lines, wrapped to the box, up to the view's height; what doesn't fit is counted.
+    const inner = Math.max(10, this.renderer.width - 8);
+    const room = Math.max(3, this.renderer.height - 7);
+    const rowsOf = (l: string) => Math.max(1, Math.ceil(Bun.stringWidth(l) / inner));
+    let rows = lines.reduce((n, l) => n + rowsOf(l), 0);
+    if (rows > room) {
+      let used = 0;
+      const fit = lines.findIndex((l) => (used += rowsOf(l)) > room - 1);
+      const more = lines.length - fit;
+      lines = [...lines.slice(0, fit), `  … and ${more} more ${more === 1 ? 'line' : 'lines'}`];
+      rows = room;
+    }
     const accent = fg(THEME.accentBg);
     const plain = fg(THEME.barFg);
     this.infoContent.content = new StyledText(
       lines.map((l, i) => {
         const end = i < lines.length - 1 ? '\n' : '';
-        return l.startsWith(' ') || l === 'looking…' ? plain(l + end) : bold(accent(l + end));
+        return heading(l, i) ? bold(accent(l + end)) : plain(l + end);
       }),
     );
-    // As tall as its lines, wrapped to the box, up to the view's height.
-    const inner = Math.max(10, this.renderer.width - 8);
-    const rows = lines.reduce((n, l) => n + Math.max(1, Math.ceil(l.length / inner)), 0);
     this.infoBox.height = Math.min(rows + 2, Math.max(5, this.renderer.height - 5));
     this.infoBox.title = title;
     this.infoBox.visible = true;
@@ -1458,6 +1486,10 @@ export class App {
         return args.n === undefined ? 'reading the history' : `going to page ${args.n} of the history`;
       case 'dialog':
         return 'answering the dialog';
+      case 'audit':
+        return 'checking the page for accessibility';
+      case 'expect':
+        return `looking for "${args.text}"`;
       case 'stop':
         return 'stopping the session';
       default:
@@ -1468,6 +1500,9 @@ export class App {
   private drawTop() {
     const p = this.current;
     const left: Segment[] = [...this.badge(), { text: ' ' }];
+    // Recording a script: a red dot and how many steps, like a camera's.
+    const rec = this.recording;
+    if (rec) left.push({ text: ` ● rec ${rec.steps} `, fg: THEME.barFg, bg: THEME.recording, attrs: TextAttributes.BOLD }, { text: ' ' });
     if (p) left.push({ text: p.title || '(untitled)', attrs: TextAttributes.BOLD }, { text: `  ${p.url}`, fg: THEME.barDim });
     else left.push({ text: 'no page open', fg: THEME.barDim });
     const grid = this.page.gridMode === 'none' ? '' : ` · ${GRID_LABELS[this.page.gridMode]}`;

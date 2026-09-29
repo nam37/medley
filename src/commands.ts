@@ -28,7 +28,9 @@ export interface CommandFlags {
   max?: number; // a size limit on page results (the CLI's --max)
 }
 
-const FLAGS = new Set(['--links', '--diff', '--submit', '--hard', '--outline', '--full', '--new-tab', '--dom', '--reader', '--all', '--csv']);
+const FLAGS = new Set(['--links', '--diff', '--submit', '--hard', '--outline', '--full', '--new-tab', '--dom', '--reader', '--all', '--csv', '--json']);
+// Options followed by a value: wait --for "Order placed".
+const VALUE_FLAGS = new Set(['--for', '--gone', '--section']);
 
 export class UsageError extends Error {}
 
@@ -60,18 +62,18 @@ export function splitWords(line: string): string[] {
   return words;
 }
 
-/** Pull --links, --diff, --submit and --hard out of a word list. */
+/** Pull options (--links, --submit, --for <text>, …) out of a word list, as the command line does. */
 export function splitFlags(words: string[]): { words: string[]; flags: CommandFlags } {
-  const flags: CommandFlags = {};
-  const rest = words.filter((w) => {
-    if (FLAGS.has(w)) {
-      const key = w.slice(2).replace(/-(\w)/g, (_, c: string) => c.toUpperCase()); // --new-tab → newTab
-      (flags as Record<string, unknown>)[key] = true;
-      return false;
-    }
-    return true;
-  });
-  return { words: rest, flags };
+  const flags: Record<string, unknown> = {};
+  const rest: string[] = [];
+  const key = (w: string) => w.slice(2).replace(/-(\w)/g, (_, c: string) => c.toUpperCase()); // --new-tab → newTab
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (FLAGS.has(w)) flags[key(w)] = true;
+    else if (VALUE_FLAGS.has(w) && i + 1 < words.length) flags[key(w)] = words[++i];
+    else rest.push(w);
+  }
+  return { words: rest, flags: flags as CommandFlags };
 }
 
 export function parseCommand([command, ...rest]: string[], flags: CommandFlags = {}): ParsedCommand {
@@ -117,9 +119,9 @@ export function parseCommand([command, ...rest]: string[], flags: CommandFlags =
     case 'close-tab':
       return { cmd: 'close-tab', args: { n: rest[0] } };
     case 'scroll':
-      return { cmd: 'scroll', args: { to: rest[0] ?? 'down' } };
+      return { cmd: 'scroll', args: { to: rest.join(' ') || 'down' } };
     case 'reload':
-      return { cmd: 'reload', args: { hard: flags.hard } };
+      return { cmd: 'reload', args: { hard: flags.hard, diff: flags.diff } };
     case 'upload':
       need(2, 'upload <ref> <file>...');
       // The session may run in another directory; paths are resolved here.
@@ -152,7 +154,24 @@ export function parseCommand([command, ...rest]: string[], flags: CommandFlags =
     case 'source':
       return { cmd: 'source', args: { dom: flags.dom } };
     case 'wait':
-      return { cmd: 'wait', args: { seconds: rest[0], for: flags.for, gone: flags.gone } };
+      return { cmd: 'wait', args: { seconds: rest[0], for: flags.for, gone: flags.gone, diff: flags.diff } };
+    case 'expect': {
+      const text = flags.gone ?? rest.join(' ');
+      if (!text) throw new UsageError('usage: expect <text> | expect --gone <text>');
+      return { cmd: 'expect', args: { text, gone: flags.gone !== undefined } };
+    }
+    case 'audit':
+      return { cmd: 'audit', args: { json: flags.json } };
+    case 'record': {
+      const action = rest[0] ?? 'status';
+      if (action === 'start') return { cmd: 'record', args: { action, file: rest[1] ? resolve(rest[1]) : undefined } };
+      if (action === 'stop' || action === 'status') return { cmd: 'record', args: { action } };
+      throw new UsageError('usage: record start [file] | record stop | record status');
+    }
+    case 'replay':
+    case 'playwright':
+    case 'watch':
+      throw new UsageError(`${command} runs from a shell: medley ${command} …`);
     case 'fill': {
       need(1, 'fill <ref>=<value>... [--submit]');
       const fields = rest.map((w) => {

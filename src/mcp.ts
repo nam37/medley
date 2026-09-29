@@ -2,10 +2,12 @@
 // and a person at a terminal (`medley snapshot`) share one browser.
 
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { CommandError, request, type StartOptions } from './client.ts';
 import { searchUrl, toUrl } from './commands.ts';
+import { parseScript, replay, replaySummary, stepLines } from './script.ts';
 
 const REF = {
   type: ['integer', 'string'],
@@ -42,7 +44,15 @@ browser_extract gives tables and lists of results as data.
 
 Anywhere a ref goes, the element's name works too ("Add to cart"). After an
 action, notes say if the page logged errors or its requests failed;
-browser_console and browser_network show them.
+browser_console and browser_network show them. For a page you're building,
+browser_reload with diff=true after an edit says how its text changed, and
+browser_audit checks its accessibility.
+
+browser_record writes down what's done in the session (by you, or your user in
+the terminal UI) as a script of steps that name what they act on; your user can
+replay it without you (medley replay), or you can with browser_replay, for a
+chore done again or a check that a site still works. browser_expect adds a
+check to a script: it fails when text isn't on the page.
 
 Your user may be watching this browser in medley's terminal UI, and can talk to you
 there. What they say comes at the start of a tool result, in its own block that
@@ -170,8 +180,8 @@ const TOOLS: Tool[] = [
     name: 'browser_reload',
     cmd: 'reload',
     description:
-      "Reload the page, as a browser's refresh button does, and return it. With hard=true, bypass the cache. To see what a page changed on its own without reloading it, use browser_wait.",
-    inputSchema: { type: 'object', properties: { hard: { type: 'boolean' } } },
+      "Reload the page, as a browser's refresh button does, and return it. With hard=true, bypass the cache. With diff=true, return only how its text changed from before the reload (after editing a page you're building; refs renumbered by the reload don't count as changes). To see what a page changed on its own without reloading it, use browser_wait.",
+    inputSchema: { type: 'object', properties: { hard: { type: 'boolean' }, diff: { type: 'boolean' } } },
   },
   {
     name: 'browser_downloads',
@@ -209,6 +219,41 @@ const TOOLS: Tool[] = [
     cmd: 'network',
     description: "The page's requests that failed: an error status (404, 500) or no answer (blocked, refused, timed out). all=true: every request, with its status and type.",
     inputSchema: { type: 'object', properties: { all: { type: 'boolean' } } },
+  },
+  {
+    name: 'browser_audit',
+    cmd: 'audit',
+    description:
+      "Check the page's accessibility (WCAG 2.2 A and AA, what can be checked automatically): pictures without a text alternative, controls without names, text with too little contrast, controls a keyboard can't reach, focusable things hidden from screen readers, frames without titles, a missing page language or title, zoom turned off; and as warnings, fields labelled only by a placeholder, headings that skip levels, vague link text. Each with the refs of what's wrong where it has them, and how to fix it.",
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'browser_expect',
+    cmd: 'expect',
+    description:
+      'Check that `text` is on the page (its text or title, in any case), or with gone=true that it is not, waiting up to `seconds` (default 5) for it to be so; an error if not. While recording, it becomes a check in the script.',
+    inputSchema: { type: 'object', properties: { text: { type: 'string' }, gone: { type: 'boolean' }, seconds: { type: 'number' } }, required: ['text'] },
+  },
+  {
+    name: 'browser_record',
+    cmd: 'record',
+    description:
+      "Record a script: action=\"start\" writes down what's done in this session from now on (by you or your user), as medley commands that name what they act on (\"click button Add to cart\"), saving it to `file` (default ~/.medley/recordings/…) as it goes; action=\"stop\" ends it and returns the script; action=\"status\" says how far it's got. What's typed into password and other secret fields isn't kept: the script reads it from the environment as ${PASSWORD} when replayed.",
+    inputSchema: {
+      type: 'object',
+      properties: { action: { type: 'string', enum: ['start', 'stop', 'status'] }, file: { type: 'string' } },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'browser_replay',
+    cmd: 'replay',
+    description:
+      'Do a recorded script\'s steps again (from `file`, or the `script` text), stopping at the first that fails, and say how each went. Your user can do the same without you: medley replay <file>. `vars` gives values for ${NAME}s in it; otherwise they come from the environment.',
+    inputSchema: {
+      type: 'object',
+      properties: { file: { type: 'string' }, script: { type: 'string' }, vars: { type: 'object', additionalProperties: { type: 'string' } } },
+    },
   },
   {
     name: 'browser_ask_user',
@@ -339,6 +384,18 @@ export async function serveMcp(sessionName: string, start: StartOptions) {
   const client = `mcp-${process.pid}`;
   const write = (msg: object) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n');
 
+  /** A script's steps done again, as the agent itself (so its next look carries on from there). */
+  async function replayFor(args: Record<string, unknown>): Promise<string> {
+    const name = args.file ? String(args.file) : 'the script';
+    const text = args.script !== undefined ? String(args.script) : args.file ? readFileSync(resolve(String(args.file)), 'utf8') : '';
+    const steps = parseScript(text);
+    if (!steps.length) throw new Error('give a script: its file, or its text');
+    const vars = { ...process.env, ...((args.vars as Record<string, string>) ?? {}) };
+    const results = await replay(sessionName, steps, { client, start, vars });
+    const lines = results.flatMap((r, i) => stepLines(r, i + 1));
+    return [...lines, replaySummary(results, steps.length, name)].join('\n');
+  }
+
   async function handle(method: string, params: any): Promise<unknown> {
     switch (method) {
       case 'initialize':
@@ -364,6 +421,8 @@ export async function serveMcp(sessionName: string, start: StartOptions) {
           if (tool.cmd === 'wait' && args.text !== undefined) args[args.gone ? 'gone' : 'for'] = String(args.text);
           if (tool.cmd === 'tell-user') args.text = args.message;
           if (tool.cmd === 'extract' && args.format === 'csv') args.csv = true;
+          if (tool.cmd === 'record' && args.file) args.file = resolve(String(args.file));
+          if (tool.cmd === 'replay') return { content: [{ type: 'text', text: await replayFor(args) }] };
           if (PAGE_TOOLS.has(tool.cmd)) args.max = args.max_chars === undefined ? MAX_CHARS : Number(args.max_chars);
           const command = { cmd: tool.cmd, args, client };
           const reply = await request(sessionName, command, tool.cmd === 'goto' ? start : undefined);

@@ -109,9 +109,19 @@ export function changedLines(a: string[], b: string[]): Set<number> {
   return changed;
 }
 
-export function diffLines(a: string[], b: string[], context = 1): Diff | null {
-  const ops = editScript(a, b);
+/**
+ * What changed from a to b, as hunks. With `key`, lines are compared by
+ * their keys (two versions of a document number their refs afresh, so a
+ * line whose ref number moved hasn't changed), and shown as they are in b.
+ */
+export function diffLines(a: string[], b: string[], context = 1, key?: (line: string) => string): Diff | null {
+  let ops = key ? editScript(a.map(key), b.map(key)) : editScript(a, b);
   if (!ops) return null;
+  if (key) {
+    let ai = 0;
+    let bi = 0;
+    ops = ops.map(([t]): Op => (t === '-' ? ['-', a[ai++]] : t === '+' ? ['+', b[bi++]] : (ai++, [' ', b[bi++]])));
+  }
 
   // Group changes, with `context` unchanged lines around each group.
   const hunks: [number, number][] = [];

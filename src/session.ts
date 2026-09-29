@@ -5,16 +5,20 @@
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { auditText, type AuditResult } from './audit.ts';
 import { Browser, sleep, type Dialog, type DownloadEvent, type LaunchOptions, type Page, type RequestEntry } from './browser.ts';
 import { diffLines, whereIs } from './diff.ts';
 import { ABOUT, siteOf, type About, type PageInfo } from './info.ts';
 import { parseKey } from './keys.ts';
+import { matchRef } from './names.ts';
+import type { RecordingStatus } from './script.ts';
 import { findTokens } from './tokens.ts';
 import { mainText, pageData, renderParts, type El, type LayoutGroup, type PageData, type PageModel, type Visual } from './render.ts';
 
 const read = (file: string) => readFileSync(fileURLToPath(new URL(file, import.meta.url)), 'utf8');
 const EXTRACT = read('./extract.js');
 const ACTIONS = read('./page-actions.js');
+const AUDIT = read('./audit.js');
 
 /**
  * A diff says what changed, which a full page doesn't, so prefer it unless
@@ -44,11 +48,17 @@ export interface Screenshot {
   scale: number;
 }
 
-type Outcome = { full?: boolean; showScroll?: boolean };
+/**
+ * How an action reports: `full`, the whole page; `showScroll`, where the
+ * window is; `across`, what changed even when the page loaded anew (a reload
+ * of a page being edited), as a diff that ignores renumbered refs.
+ */
+type Outcome = { full?: boolean; showScroll?: boolean; across?: boolean };
 
 /** What a client that draws the page itself (the terminal UI) needs after a command. */
 export interface View {
   dialog: Dialog | null;
+  recording?: RecordingStatus | null; // added by the daemon, which does the recording (see script.ts)
   tabs: { current: number; count: number };
   page: {
     doc: string;
@@ -222,47 +232,7 @@ function readerText(s: Snap): string {
   return [...s.header, '', note, '', ...lines].join('\n');
 }
 
-// ---- names, data, the console and the network ---------------------------------------
-
-const KINDS = new Set([
-  'link', 'button', 'textbox', 'password', 'combobox', 'select', 'checkbox', 'radio', 'slider',
-  'tab', 'menuitem', 'option', 'file', 'draggable', 'clickable',
-]);
-
-/** A ref's kind and name from how snapshots show it: [7]Docs, [8 button "Save"], [9 clickable]Card text. */
-function parseLabel(label: string): { kind: string; name: string } {
-  const m = /^\[\d+(?: (\w+))?(?: "((?:[^"\\]|\\.)*)")?\](.*)$/.exec(label);
-  if (!m) return { kind: '', name: label };
-  return { kind: m[1] ?? 'link', name: (m[2] !== undefined ? m[2].replace(/\\(.)/g, '$1') : m[3]).trim() };
-}
-
-/**
- * The ref whose name is `query` (exactly, then at the start, then anywhere,
- * in any case), of the kind it names first if it does ("button Save").
- * Several that fit equally well are an error listing them; none is null, or
- * an error when `surely`.
- */
-function matchRef(labels: Map<number, string>, query: string, surely: boolean): number | null {
-  let kind = '';
-  let name = query.replace(/^["']|["']$/g, '');
-  const m = /^(\w+)\s+(.+)$/.exec(name);
-  if (m && KINDS.has(m[1].toLowerCase())) {
-    kind = m[1].toLowerCase();
-    name = m[2].replace(/^["']|["']$/g, '');
-  }
-  const want = name.toLowerCase();
-  const pool = [...labels].map(([ref, label]) => ({ ref, label, ...parseLabel(label) })).filter((p) => !kind || p.kind === kind);
-  for (const fits of [(n: string) => n === want, (n: string) => n.startsWith(want), (n: string) => n.includes(want)]) {
-    const found = pool.filter((p) => p.name && fits(p.name.toLowerCase()));
-    if (found.length === 1) return found[0].ref;
-    if (found.length > 1) {
-      const list = found.slice(0, 8).map((f) => f.label).join(', ');
-      throw new Error(`"${query}" fits ${found.length} elements: ${list}${found.length > 8 ? ', …' : ''}; use its number, or say which kind ("button ${name}")`);
-    }
-  }
-  if (!surely) return null;
-  throw new Error(`nothing on the page is called "${query}"; find or snapshot shows what is`);
-}
+// ---- data, the console and the network -----------------------------------------------
 
 /** What extract can give: the tables and runs of items, numbered, with where they are. */
 function dataList(s: Snap, data: PageData): string {
@@ -316,6 +286,13 @@ const requestFailed = (r: RequestEntry) => (r.status !== undefined && r.status >
 
 /** How a request went wrong: its error status, or why it got none. */
 const failure = (r: RequestEntry) => (r.failed && r.failed !== 'canceled' ? r.failed : String(r.status ?? r.failed ?? '…'));
+
+/** A check, in the page, of whether its title or text has `text` (in any case). */
+const textProbe = (text: string) =>
+  `(() => (document.title + '\\n' + ((document.body && document.body.innerText) || '')).toLowerCase().includes(${JSON.stringify(text.toLowerCase())}))()`;
+
+/** A line with its refs' numbers taken out, for comparing two loads of a page (see diffLines). */
+const withoutRefs = (line: string) => line.replace(/\[\d+(?=[\] ])/g, '[#');
 
 const fullText = (s: Snap, links = false) =>
   [...s.header, '', ...s.body, ...(links && s.links.length ? ['', '── links ──', ...s.links] : [])].join('\n');
@@ -514,7 +491,7 @@ export class Session {
    */
   waitFor(client: string, text: string, { gone = false, seconds = 10 } = {}): Promise<string> {
     // The page's title counts too: waiting for the next page is often waiting for its title.
-    const probe = `(() => (document.title + '\\n' + ((document.body && document.body.innerText) || '')).toLowerCase().includes(${JSON.stringify(text.toLowerCase())}))()`;
+    const probe = textProbe(text);
     let what = '';
     return this.act(client, () => what, async () => {
       const start = Date.now();
@@ -537,6 +514,47 @@ export class Session {
         await sleep(250);
       }
     });
+  }
+
+  /**
+   * Check that `text` is on the page (its text or title, in any case), or
+   * with `gone` that it isn't, waiting up to `seconds` for it to be so. Not
+   * so by then is an error: a script's check that failed (see script.ts).
+   */
+  async expect(text: string, { gone = false, seconds = 5 } = {}): Promise<string> {
+    const want = text.trim();
+    if (!want) throw new Error('expect needs some text to look for');
+    if (this.dialog) throw new Error(this.dialogText());
+    await this.ensureTab();
+    const probe = textProbe(want);
+    const start = Date.now();
+    for (;;) {
+      let present: boolean | null = null;
+      try {
+        present = await this.page.evaluate<boolean>(probe);
+      } catch {
+        // the page is between documents; look again
+      }
+      if (present !== null && present !== gone) break;
+      if (Date.now() - start >= seconds * 1000) {
+        const at = await this.page.evaluate<{ title: string; url: string }>('({ title: document.title, url: location.href })').catch(() => null);
+        const page = at ? ` (the page is "${at.title || '(untitled)'}", ${at.url})` : '';
+        throw new Error(
+          gone
+            ? `expected "${want}" to be gone, but after ${seconds}s it's still on the page${page}`
+            : `expected "${want}" on the page, but after ${seconds}s it isn't there${page}`,
+        );
+      }
+      await sleep(250);
+    }
+    if (gone) return `ok: "${want}" isn't on the page`;
+    // The line it's on, and where that is, as find shows it.
+    const snap = await this.capture();
+    const i = snap.body.findIndex((l) => l.toLowerCase().includes(want.toLowerCase()));
+    if (i < 0) return `ok: "${want}" is on the page`;
+    const where = whereIs(snap.body, i);
+    const line = snap.body[i].trim();
+    return `ok: "${want}" is on the page${where ? ` · ${where}` : ''} · ${line.length > 120 ? line.slice(0, 119) + '…' : line}`;
   }
 
   async select(client: string, ref: number, option: string): Promise<string> {
@@ -578,9 +596,10 @@ export class Session {
     return this.act(client, `scrolled ${to}`, action, { showScroll: true });
   }
 
-  reload(client: string, hard = false): Promise<string> {
+  /** Reload the page; with `diff`, report what changed from before (for a page being edited) rather than all of it. */
+  reload(client: string, hard = false, diff = false): Promise<string> {
     if (this.dialog) this.answerQuietly();
-    return this.act(client, hard ? 'reloaded, bypassing the cache' : 'reloaded', () => this.page.reload(hard));
+    return this.act(client, hard ? 'reloaded, bypassing the cache' : 'reloaded', () => this.page.reload(hard), { across: diff });
   }
 
   /** Give a file field these files (absolute paths on this machine), as if they were picked in its dialog. */
@@ -638,8 +657,9 @@ export class Session {
     return this.act(client, `went to page ${n} of the history`, () => this.page.historyGo(entry.id));
   }
 
-  wait(client: string, seconds: number): Promise<string> {
-    return this.act(client, `waited ${seconds}s`, () => sleep(seconds * 1000));
+  /** Let the page work; with `diff`, report what changed even if it loaded anew meanwhile (a dev server's reload). */
+  wait(client: string, seconds: number, diff = false): Promise<string> {
+    return this.act(client, `waited ${seconds}s`, () => sleep(seconds * 1000), { across: diff });
   }
 
   answer(client: string, accept: boolean, text?: string): Promise<string> {
@@ -901,6 +921,29 @@ export class Session {
     return notes;
   }
 
+  // ---- accessibility -----------------------------------------------------------------
+
+  /**
+   * An accessibility check of the page (see audit.js and audit.ts): what's
+   * wrong, with the refs of what it's wrong with, as this client now sees
+   * them; with `json`, the findings as data.
+   */
+  async audit(client: string, { json = false } = {}): Promise<string> {
+    if (this.dialog) return this.dialogText();
+    await this.ensureTab();
+    const snap = await this.capture(); // numbers the refs the findings name
+    this.baselines.set(client, snap);
+    const result = await this.page.evaluate<AuditResult>(AUDIT);
+    const global = (local: number) => this.refs?.map.lookup(TOP, local) ?? local;
+    const labelOf = (local: number) => snap.labels.get(global(local));
+    if (!json) return auditText(result, labelOf);
+    const findings = result.findings.map(({ ref, ...f }) => {
+      const label = ref === undefined ? undefined : labelOf(ref);
+      return label ? { ...f, ref: global(ref!), label } : f;
+    });
+    return JSON.stringify({ ...result, findings }, null, 1);
+  }
+
   // ---- page info and source ---------------------------------------------------
 
   /** The connection, cookies and site data, what the page says about itself, and what loading it took (see info.ts). */
@@ -1114,6 +1157,17 @@ export class Session {
     };
   }
 
+  /** The refs as this client last saw them, by number, as snapshots show them ([8 button "Save"]). */
+  labelsFor(client: string): Map<number, string> {
+    return this.baselines.get(client)?.labels ?? new Map();
+  }
+
+  /** The current tab's address ('' while a dialog blocks it). */
+  async currentUrl(): Promise<string> {
+    if (this.dialog || this.page.closed) return '';
+    return this.page.evaluate<string>('location.href').catch(() => '');
+  }
+
   async status(): Promise<string> {
     const minutes = Math.round((Date.now() - this.startedAt) / 60000);
     if (this.dialog) return `a ${this.dialog.type} dialog is open · up ${minutes} min`;
@@ -1246,7 +1300,7 @@ export class Session {
     return this.report(client, typeof what === 'function' ? what() : what, outcome);
   }
 
-  private async report(client: string, what: string, { full = false, showScroll = false }: Outcome = {}): Promise<string> {
+  private async report(client: string, what: string, { full = false, showScroll = false, across = false }: Outcome = {}): Promise<string> {
     await this.ensureTab();
     await this.adoptPopup();
     const notes = this.takeNotes();
@@ -1256,13 +1310,14 @@ export class Session {
     const before = this.baselines.get(client);
     this.baselines.set(client, snap);
     if (full) return [...notes, fullText(snap)].join('\n');
-    if (!before || before.doc !== snap.doc) return [`${what} → new page`, ...notes, '', fullText(snap)].join('\n');
+    const anew = !!before && before.doc !== snap.doc;
+    if (!before || (anew && !across)) return [`${what} → new page`, ...notes, '', fullText(snap)].join('\n');
 
     const facts = [...notes];
     if (snap.url !== before.url) facts.push(`url: ${snap.url}`);
     if (snap.title !== before.title) facts.push(`title: ${snap.title}`);
     if (showScroll) facts.push(/viewport .*$/.exec(snap.header[1])?.[0] ?? 'the page does not scroll');
-    const d = diffLines(before.body, snap.body);
+    const d = diffLines(before.body, snap.body, 1, anew ? withoutRefs : undefined);
     if (!d || d.added + d.removed > MAX_CHURN * (before.body.length + snap.body.length)) {
       return [`${what} · page changed substantially`, ...facts, '', fullText(snap)].join('\n');
     }

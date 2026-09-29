@@ -9,6 +9,7 @@ import { statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { codeStamp, removeSessionInfo, writeSessionInfo, type Command, type SessionEvent } from './client.ts';
 import { infoText } from './info.ts';
+import { defaultScriptFile, Recording, stepFor } from './script.ts';
 import { Session } from './session.ts';
 import { Talk } from './talk.ts';
 
@@ -42,6 +43,9 @@ const talk = new Talk(
   (t) => announce({ client: 'agent', cmd: 'talk', ok: true, summary: '', talk: t }),
   () => watchers.size > 0, // only the terminal UI follows /events
 );
+// A script being recorded (see script.ts): what anyone does in the session, as it's done.
+let recording: Recording | null = null;
+const REPLAYER = 'replay'; // the CLI's replay; its steps are a script already
 
 const server = Bun.serve({
   hostname: '127.0.0.1',
@@ -75,10 +79,13 @@ const server = Bun.serve({
       const started = performance.now();
       try {
         await resolveNames(command, client);
+        // Written down as the page was when it was done: names come from what the client saw.
+        const step = recording && client !== REPLAYER ? stepFor(command, session.labelsFor(client)) : null;
         // Where it's about to act, so a watching terminal UI can show that client's cursor there.
         refs = refsOf(command);
         if (refs.length) announce({ client, cmd: command.cmd, ok: true, summary: '', refs, starting: true });
         const text = await dispatch(command, client);
+        if (step) recording?.add(step);
         const max = Number(command.args?.max);
         return max > 0 && PAGE_COMMANDS.has(command.cmd) ? session.limit(client, text, max) : text;
       } finally {
@@ -89,7 +96,8 @@ const server = Bun.serve({
     try {
       const text = await run;
       announce({ client, cmd: command.cmd, ok: true, summary: summarize(command, text), refs: refs.length ? refs : undefined });
-      return Response.json({ ok: true, text, state: command.state ? session.view(client) : undefined, messages: forAgent(client) });
+      const state = command.state ? { ...session.view(client), recording: recording?.status ?? null } : undefined;
+      return Response.json({ ok: true, text, state, messages: forAgent(client) });
     } catch (e) {
       const error = (e as Error).message;
       announce({ client, cmd: command.cmd, ok: false, summary: `${command.cmd} failed: ${error.split('\n')[0]}` });
@@ -130,7 +138,7 @@ function eventStream(req: Request): Response {
 }
 
 function announce(event: SessionEvent) {
-  const chunk = `data: ${JSON.stringify(event)}\n\n`;
+  const chunk = `data: ${JSON.stringify({ ...event, recording: recording?.status ?? null })}\n\n`;
   for (const send of watchers) send(chunk);
 }
 
@@ -149,6 +157,7 @@ async function resolveNames({ cmd, args }: Command, client: string) {
   const at = (v: unknown) => session.resolveRef(client, v);
   if (['click', 'type', 'select', 'hover', 'upload'].includes(cmd) && args.ref !== undefined) args.ref = await at(args.ref);
   if (cmd === 'drag' && args.from !== undefined) args.from = await at(args.from);
+  if (cmd === 'scroll' && args.to !== undefined && !/^(down|up|top|bottom)$/.test(String(args.to))) args.to = await at(args.to);
   if (cmd === 'fill' && args.fields && typeof args.fields === 'object') {
     const list = Array.isArray(args.fields)
       ? args.fields.map((f: any) => ({ ref: f?.ref, value: f?.value }))
@@ -229,6 +238,7 @@ function summarize({ cmd, args }: Command, text: string): string {
   if (cmd === 'console') return 'read the console';
   if (cmd === 'network') return 'looked at the network';
   if (cmd === 'extract') return 'took data from the page';
+  if (cmd === 'audit') return 'checked the page for accessibility';
   if (cmd === 'history' && args?.n === undefined) return 'listed the history';
   return text.split('\n')[0];
 }
@@ -318,7 +328,7 @@ async function dispatch({ cmd, args = {} }: Command, client: string): Promise<st
     case 'close-tab':
       return session.closeTab(client, args.n === undefined ? undefined : tab(args.n));
     case 'reload':
-      return session.reload(client, !!args.hard);
+      return session.reload(client, !!args.hard, !!args.diff);
     case 'upload':
       return session.upload(client, ref(args.ref), files(args.files));
     case 'back':
@@ -330,8 +340,14 @@ async function dispatch({ cmd, args = {} }: Command, client: string): Promise<st
       if (text !== undefined && text !== '') {
         return session.waitFor(client, String(text), { gone: args.for === undefined, seconds: Math.min(Number(args.seconds) || 10, 60) });
       }
-      return session.wait(client, Math.min(Number(args.seconds) || 2, 60));
+      return session.wait(client, Math.min(Number(args.seconds) || 2, 60), !!args.diff);
     }
+    case 'expect':
+      return session.expect(String(args.text ?? ''), { gone: !!args.gone, seconds: Math.min(Number(args.seconds) || 5, 60) });
+    case 'audit':
+      return session.audit(client, { json: !!args.json });
+    case 'record':
+      return record(String(args.action ?? 'status'), args.file === undefined ? undefined : String(args.file));
     case 'dialog':
       if (args.action !== 'accept' && args.action !== 'dismiss') throw new Error('dialog needs accept or dismiss');
       return session.answer(client, args.action === 'accept', args.text === undefined ? undefined : String(args.text));
@@ -371,6 +387,31 @@ async function dispatch({ cmd, args = {} }: Command, client: string): Promise<st
     default:
       throw new Error(`unknown command "${cmd}"`);
   }
+}
+
+/** Start, stop or ask about recording a script (see script.ts). */
+async function record(action: string, file?: string): Promise<string> {
+  if (action === 'start') {
+    if (recording) throw new Error(`already recording, ${recording.count} steps so far, to ${recording.file}; record stop ends it`);
+    if (file !== undefined && !isAbsolute(file)) throw new Error(`"${file}" is not an absolute path`);
+    recording = new Recording(file ?? defaultScriptFile());
+    // A script starts where the page is, so replaying it starts there too.
+    const url = await session.currentUrl();
+    const from = /^(https?|file):/.test(url) ? stepFor({ cmd: 'goto', args: { url } }, new Map()) : null;
+    if (from) recording.add(from);
+    else recording.save();
+    return `recording to ${recording.file}${from ? `, from ${url}` : ''}: what's done in this session is written down as it's done · record stop ends it`;
+  }
+  if (action === 'stop') {
+    if (!recording) throw new Error('not recording; record start begins');
+    const done = recording;
+    recording = null;
+    done.save();
+    const steps = done.count === 1 ? '1 step' : `${done.count} steps`;
+    return [`stopped recording: ${steps}, saved to ${done.file}`, '', done.text().trimEnd()].join('\n');
+  }
+  if (action === 'status') return recording ? `recording: ${recording.count} steps so far, to ${recording.file}` : 'not recording';
+  throw new Error('record start [file], record stop or record status');
 }
 
 function resetIdle() {

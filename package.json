@@ -20,6 +20,7 @@
     "test:frames": "bun test/frames.ts",
     "test:idle": "bun test/idle.ts",
     "test:agent": "bun test/agent.ts",
+    "test:dev": "bun test/dev.ts",
     "image-compare": "bun scripts/image-compare.ts"
   },
   "dependencies": {

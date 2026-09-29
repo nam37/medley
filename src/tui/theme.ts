@@ -27,4 +27,5 @@ export const THEME = {
   warn: RGBA.fromHex('#d19a3a'),
   error: RGBA.fromHex('#e06c75'),
   agent: RGBA.fromHex('#c678dd'),
+  recording: RGBA.fromHex('#b3303a'),
 };

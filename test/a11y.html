@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>Trail Co-op</title>
+  <style>
+    body { font-family: sans-serif; margin: 2rem; background: #fff; color: #222; }
+    .faint { color: #aaa; }
+    .fine { color: #767676; }
+    .hero { position: relative; width: 400px; height: 120px; }
+    .hero img { position: absolute; inset: 0; width: 100%; height: 100%; }
+    .hero p { position: absolute; left: 1rem; top: 1rem; margin: 0; color: #fff; }
+    .card { cursor: pointer; border: 1px solid #ccc; padding: .5rem; width: 12rem; }
+    .icon { width: 24px; height: 24px; border: 1px solid #222; background: none; }
+    .dark { background: #1d2a33; color: #2d3a44; padding: .5rem; }
+  </style>
+</head>
+<body>
+  <!-- Problems on purpose, each once, beside things done right. -->
+  <main>
+    <h1>Trail Co-op</h1>
+    <p>Members save on trail shoes and tents. <span class="fine">Gray that passes: #767676.</span></p>
+    <p class="faint">Prices shown before tax.</p>
+    <div class="dark">Hard to read on dark.</div>
+
+    <h3>Shoes</h3>
+    <img src="ridge-runner.jpg" width="120" height="80">
+    <img src="scree.jpg" alt="IMG_2041.jpg" width="120" height="80">
+    <img src="spacer.gif" alt="" width="120" height="4">
+    <img src="moss.jpg" alt="Moss Step, green, lugged sole" width="120" height="80">
+    <div class="hero"><img src="banner.jpg" alt=""><p>White text over a picture</p></div>
+
+    <p>
+      <button class="icon"></button>
+      <button class="icon" aria-label="Add to cart"></button>
+      <a href="/shoes/ridge">Read more</a>
+      <a href="/shoes/scree">Read more</a>
+      <a href="/shoes/moss">Moss Step details</a>
+    </p>
+    <div class="card" onclick="this.textContent = 'Opened'">Open the size guide</div>
+    <div class="card" tabindex="0" onclick="this.textContent = 'Opened'">Open the returns policy</div>
+
+    <form>
+      <input type="search" placeholder="Search the shop">
+      <label>Email <input type="email" name="email"></label>
+      <input type="text" name="coupon">
+      <button type="submit" tabindex="3">Join</button>
+    </form>
+
+    <div aria-hidden="true"><a href="/hidden">A link screen readers never hear</a></div>
+    <iframe srcdoc="<p>Store map</p>" width="200" height="60"></iframe>
+    <iframe srcdoc="<p>Store hours</p>" title="Store hours" width="200" height="60"></iframe>
+  </main>
+</body>
+</html>

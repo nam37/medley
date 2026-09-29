@@ -9,6 +9,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sleep } from './browser.ts';
+import type { RecordingStatus } from './script.ts';
 import type { View } from './session.ts';
 import type { TalkEvent } from './talk.ts';
 
@@ -34,6 +35,7 @@ export interface SessionEvent {
   talk?: TalkEvent;
   refs?: number[]; // the elements the command acts on, for showing where a client is at
   starting?: boolean; // announced as the command begins, rather than when it's done
+  recording?: RecordingStatus | null; // a script being recorded, if one is (see script.ts)
 }
 
 /** A command that failed, with anything the person watching said meanwhile. */

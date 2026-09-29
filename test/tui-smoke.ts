@@ -307,6 +307,32 @@ try {
   await until('the app again', (f) => f.includes('# Todos'));
   console.log('\nm again showed all of the page; b went back');
 
+  // :record start writes down what's done, and the top bar says so; :record stop shows the script.
+  const script = join(tmpdir(), 'medley-smoke.medley');
+  rmSync(script, { force: true });
+  mockInput.pressKey(':');
+  await mockInput.typeText(`record start "${script}"`);
+  mockInput.pressEnter();
+  show(':record start: the top bar says so', await until('recording', (f) => f.split('\n')[0].includes('● rec 1')));
+  await keys('7');
+  mockInput.pressEnter();
+  await until('the click, written down', (f) => f.includes('Hello said 1') && f.split('\n')[0].includes('● rec 2'));
+  mockInput.pressKey(':');
+  await mockInput.typeText('record stop');
+  mockInput.pressEnter();
+  show(':record stop shows the script', await until('the script', (f) => f.includes('click button Say hello') && !f.includes('● rec')));
+  await keys('x');
+  await until('the script to close', (f) => !f.includes('click button Say hello'));
+  console.log(`\nthe script was saved: ${existsSync(script) && readFileSync(script, 'utf8').includes('click button Say hello') ? 'yes' : 'no (bad)'}`);
+
+  // :audit checks the page's accessibility, in a box over the page.
+  mockInput.pressKey(':');
+  await mockInput.typeText('audit');
+  mockInput.pressEnter();
+  show(':audit shows what it found', await until('the audit', (f) => f.includes('accessibility · any key closes') && f.includes('audit:')));
+  await keys('x');
+  await until('the audit to close', (f) => !f.includes('accessibility · any key closes'));
+
   await keys('?');
   show('? shows the keys', await until('the help', (f) => f.includes('any key to close')));
   await keys('x');

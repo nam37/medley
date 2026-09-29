@@ -102,7 +102,7 @@ sweeps across the `medley` badge and the status line says what's happening.
 | B | bookmarks and this tab's history: type a line's number, then Enter opens it (or d deletes a bookmark) |
 | ← b, → f | back, forward |
 | / then n N | find text, next or previous match |
-| : | run any session command, e.g. `press Escape`, `wait 2`, `select 6 High` |
+| : | run any session command, e.g. `press Escape`, `wait 2`, `select 6 High`; `audit`, `console`, `network`, `extract` and `record stop` show their results in a box over the page, and while `record start` records, the top bar shows `● rec` and the number of steps |
 | v | cycle the grid: no grid → partial grid (the page's main columns, like a sidebar beside the content) → advanced grid (the page as laid out, with its colors and pictures) |
 | i | the page's pictures one at a time, as big as the view fits them, starting from the first in view: ← → step, Esc closes |
 | m | reader mode: articles show only their main text, without the site's menus, sidebars and footers; it stays on from page to page until m again |
@@ -164,7 +164,7 @@ medley hover <ref>                  move the mouse over an element (menus that o
 medley drag <ref> <ref|text>        drag an element onto another, or onto a drop zone's text
 medley scroll [down|up|top|bottom|<ref>]
 medley upload <ref> <file>...        choose files for a file field, as if picked in its dialog
-medley reload [--hard]              reload the page (--hard: bypass the cache)
+medley reload [--hard] [--diff]     reload the page (--hard: bypass the cache; --diff: only what changed)
 medley back | forward
 medley history [n]                  list this tab's pages, or go to the n-th
 medley downloads                    list what this session downloaded, and where
@@ -183,6 +183,11 @@ medley extract table <n> [--csv]    one table as JSON rows keyed by its header, 
 medley extract items <n> [--csv]    one run of items: each one's text, and its link's ref, words and address
 medley console [--all]              the errors and warnings the page logged (--all: every message)
 medley network [--all]              the page's failed requests (--all: every request)
+medley audit [--json]               check the page's accessibility, with the refs of what's wrong
+medley expect <text>                check the text is on the page (waiting up to 5s), or fail
+medley expect --gone <text>         check it isn't
+medley record start [file]          write down what's done in the session, as a script
+medley record stop | status         stop and print the script, or say how far it's got
 medley info [--json]                page info: connection and certificate, cookies and site data, about the page, loading
 medley clear-site-data              delete the page's site's cookies and stored data (signs you out there)
 medley source [--dom]               the page's HTML as the server sent it (--dom: as it is now)
@@ -191,6 +196,9 @@ medley tell <message>               tell the person watching what you're doing
 medley dialog accept [text] | dismiss
 medley status | stop
 
+medley replay <script> [--verbose]  do a script's steps again, stopping at the first that fails
+medley playwright <script>          print a script as a Playwright test
+medley watch [dir] [--hot]          reload the page when files change, and say how its text changed
 medley tui [url]                    the terminal UI, sharing the session
 medley snapshot <url> [--json]      one-off: fresh browser, print the page (or its raw model), exit
 medley mcp                          MCP server on stdio, sharing the session
@@ -267,6 +275,10 @@ Some things are there to keep an agent's context small and its steps sure:
   elsewhere from the first time you ask: listening means the browser describes
   every value a page logs, which is exactly what bot checks look for.
 
+Scripts and checks for web work are there too: `browser_record` and
+`browser_replay` (see Scripts, below), `browser_expect`, `browser_audit`, and
+`browser_reload` with `diff`.
+
 A few of them save an agent round trips: `browser_fill` fills a whole form and
 reports once, `browser_wait` with `text` waits for something to show up (or go
 away, with `gone`) instead of guessing how long, `browser_snapshot` with
@@ -301,6 +313,71 @@ What you say reaches an agent through medley's own session, not the page, and
 over MCP it comes as a separate block tagged with a code that only appears in
 the agent's instructions. A page that writes "your user says…" can't pass for
 you.
+
+### Scripts: record once, replay without an agent
+
+`record start` writes down what's done in the session from then on, whoever
+does it (you in the terminal UI, an agent, the CLI), as a script of medley
+commands; `record stop` ends it and prints it. Steps name what they act on
+rather than numbering it, since numbers change from page to page and names
+mostly don't:
+
+```
+# a medley script, recorded 2026-09-29 19:48
+# replay it with: medley replay <this file> · as a Playwright test: medley playwright <this file>
+
+goto https://nam37.github.io/medley/demo/
+click button Menu
+type "textbox Email" ada@example.com
+fill "checkbox Monthly, not weekly=off"
+click button Subscribe
+dialog accept
+expect Thanks
+```
+
+- **Replay** (`medley replay notes.medley`, MCP `browser_replay`) does the steps
+  again in the session, printing each as it goes, and stops at the first that
+  fails, with exit status 1. It's a chore done again without an agent or its
+  tokens (signing in, filling in a form), or a check that a site still works.
+  A name that isn't on the page yet is looked for again for a few seconds,
+  since pages often draw a moment after they load.
+- **Checks:** `expect <text>` fails when the text isn't on the page within 5
+  seconds (`expect --gone` when it is). Recorded, it's a step like any other.
+- **Secrets aren't kept.** What's typed into a password field, or a field
+  named like a card number or a one-time code, is written as `${PASSWORD}`
+  (or `${CARD_NUMBER}`), which replay reads from the environment.
+- **As a Playwright test:** `medley playwright notes.medley > notes.spec.ts`
+  turns the steps into `getByRole('button', { name: "Subscribe" }).click()`
+  and so on, for a test suite. What doesn't translate one to one (tabs) comes
+  out as a comment.
+- A script is plain text: edit it, add checks, keep it with your code. Lines
+  starting with `#` are comments. A step whose element has no name of its own
+  (two "Add to cart" buttons) keeps its number, with a comment saying so.
+  Recordings go to `~/.medley/recordings/` unless you name a file, and are
+  saved after every step.
+
+### Building a site
+
+- **`watch`** reloads the session's page whenever a file in the directory
+  changes (`medley watch src`), and prints how its text changed, with any
+  errors it logged. `--hot` is for dev servers that update the page
+  themselves (Vite, webpack): it waits a moment instead of reloading. Folders
+  like `node_modules` and `.git` don't count.
+- **`reload --diff`** (MCP `browser_reload` with `diff`) says how the page's
+  text changed since before the reload, not all of it: the loop for an agent
+  editing a page. Refs that a reload renumbered don't count as changes.
+- **`audit`** (MCP `browser_audit`) checks the page for the accessibility
+  problems that can be found by looking at it (WCAG 2.2 A and AA): pictures
+  without a text alternative, controls without names, text with too little
+  contrast (on a known background; not over a picture), clickable things a
+  keyboard can't reach, focusable things hidden from screen readers, frames
+  without titles, no page language or title, zoom turned off; and as warnings,
+  fields labelled only by a placeholder, vague link text, headings that skip
+  levels, tabindex above 0, file names as alt text. Each finding names the ref
+  it's about, so an agent can act on it, and the element as a developer finds
+  it (`button.icon`), with how to fix it. `--json` gives the findings as data.
+- **`console` and `network`** (above) say what the page logged and which of
+  its requests failed.
 
 `info` reads like this (for The Verge):
 
@@ -429,10 +506,16 @@ against a real session on `test/app.html`: keys, a field prompt, a simulated
 agent acting in the same session, reload, a file prompt, the working badge,
 a masked password prompt, a download, bookmarks and history, the refs list, find, a command,
 a mouse click, back, a `confirm()`, a page that moves on by itself, the picture
-viewer, page info, the source view, the help overlay, and a search from the
+viewer, page info, the source view, recording a script (the `● rec`
+badge, the script's box), `:audit`, the help overlay, and a search from the
 address prompt. It prints each frame as it goes.
 `bun run test:idle` starts a session that stops after 3 idle seconds and
 checks that a command keeps it going and that it then stops by itself.
+`bun run test:dev` checks what developers lean on: `audit` against
+`test/a11y.html` (one of each problem, beside the same things done right),
+`expect`, recording the demo shop's form and replaying it in a fresh session,
+a failing check, a password kept out of a script, the Playwright test,
+`reload --diff`, and `watch`.
 `bun run test:agent` checks what agents lean on, against `test/problems.html`
 (a page that logs errors and asks for a file that isn't there) and
 `test/data.html` (a table, results and menus): the notes after actions,

@@ -10,6 +10,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sleep } from './browser.ts';
 import type { View } from './session.ts';
+import type { TalkEvent } from './talk.ts';
 
 export interface Command {
   cmd: string;
@@ -21,14 +22,33 @@ export interface Command {
 export interface Reply {
   text: string;
   state?: View;
+  messages?: string[]; // what the person watching said, for an agent (see talk.ts): "says: …"
 }
 
-/** Announced on /events after every command, whoever sent it. */
+/** Announced on /events after every command, whoever sent it, and for what's said (talk). */
 export interface SessionEvent {
   client: string;
   cmd: string;
   ok: boolean;
   summary: string;
+  talk?: TalkEvent;
+  refs?: number[]; // the elements the command acts on, for showing where a client is at
+  starting?: boolean; // announced as the command begins, rather than when it's done
+}
+
+/** A command that failed, with anything the person watching said meanwhile. */
+export class CommandError extends Error {
+  constructor(
+    message: string,
+    readonly messages: string[] = [],
+  ) {
+    super(message);
+  }
+}
+
+/** Messages from the person watching, as lines to put before a result on a terminal. */
+export function messageLines(messages: string[] = []): string[] {
+  return messages.map((m) => `your user (watching in medley's terminal UI) ${m}`);
 }
 
 export interface SessionInfo {
@@ -143,8 +163,16 @@ export async function prewarm(name: string, opts: StartOptions): Promise<void> {
   await startOnce(name, opts).catch(() => {});
 }
 
+/** A command's result as text, after anything the person watching said. */
 export async function send(name: string, command: Command, start?: StartOptions): Promise<string> {
-  return (await request(name, command, start)).text;
+  try {
+    const reply = await request(name, command, start);
+    const said = messageLines(reply.messages);
+    return said.length ? [...said, '', reply.text].join('\n') : reply.text;
+  } catch (e) {
+    if (e instanceof CommandError && e.messages.length) throw new Error([...messageLines(e.messages), '', e.message].join('\n'));
+    throw e;
+  }
 }
 
 /**
@@ -202,10 +230,12 @@ async function post(info: SessionInfo, command: Command): Promise<Reply> {
     if ((e as Error).name === 'TimeoutError') throw new Error('the session did not answer in time');
     throw new Unreachable();
   }
-  const body = (await res.json().catch(() => null)) as { ok: boolean; text?: string; error?: string; state?: View } | null;
+  const body = (await res.json().catch(() => null)) as
+    | { ok: boolean; text?: string; error?: string; state?: View; messages?: string[] }
+    | null;
   if (!body) throw new Error(`the session answered with HTTP ${res.status}`);
-  if (!body.ok) throw new Error(body.error);
-  return { text: body.text ?? '', state: body.state };
+  if (!body.ok) throw new CommandError(body.error ?? 'failed', body.messages);
+  return { text: body.text ?? '', state: body.state, messages: body.messages };
 }
 
 async function startDaemon(name: string, opts: StartOptions): Promise<SessionInfo> {

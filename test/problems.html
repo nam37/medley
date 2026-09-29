@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Something breaks</title>
+  <script>
+    console.warn('a warning while loading');
+    console.error('an error while loading');
+  </script>
+</head>
+<body>
+  <main>
+    <h1>Something breaks</h1>
+    <p><button id="break">Break something</button> <span id="out">Nothing broke yet</span></p>
+  </main>
+  <script>
+    // Logs an error, asks for a file that isn't there, and throws one it doesn't catch.
+    document.getElementById('break').addEventListener('click', () => {
+      document.getElementById('out').textContent = 'It broke';
+      console.error('clicking broke it', { code: 42 });
+      fetch('missing-data.json').catch(() => {});
+      setTimeout(() => {
+        const settings = null;
+        return settings.theme;
+      }, 0);
+    });
+  </script>
+</body>
+</html>

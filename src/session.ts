@@ -5,12 +5,12 @@
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Browser, sleep, type Dialog, type DownloadEvent, type LaunchOptions, type Page } from './browser.ts';
-import { diffLines } from './diff.ts';
+import { Browser, sleep, type Dialog, type DownloadEvent, type LaunchOptions, type Page, type RequestEntry } from './browser.ts';
+import { diffLines, whereIs } from './diff.ts';
 import { ABOUT, siteOf, type About, type PageInfo } from './info.ts';
 import { parseKey } from './keys.ts';
 import { findTokens } from './tokens.ts';
-import { mainText, renderParts, type El, type LayoutGroup, type PageModel, type Visual } from './render.ts';
+import { mainText, pageData, renderParts, type El, type LayoutGroup, type PageData, type PageModel, type Visual } from './render.ts';
 
 const read = (file: string) => readFileSync(fileURLToPath(new URL(file, import.meta.url)), 'utf8');
 const EXTRACT = read('./extract.js');
@@ -222,6 +222,101 @@ function readerText(s: Snap): string {
   return [...s.header, '', note, '', ...lines].join('\n');
 }
 
+// ---- names, data, the console and the network ---------------------------------------
+
+const KINDS = new Set([
+  'link', 'button', 'textbox', 'password', 'combobox', 'select', 'checkbox', 'radio', 'slider',
+  'tab', 'menuitem', 'option', 'file', 'draggable', 'clickable',
+]);
+
+/** A ref's kind and name from how snapshots show it: [7]Docs, [8 button "Save"], [9 clickable]Card text. */
+function parseLabel(label: string): { kind: string; name: string } {
+  const m = /^\[\d+(?: (\w+))?(?: "((?:[^"\\]|\\.)*)")?\](.*)$/.exec(label);
+  if (!m) return { kind: '', name: label };
+  return { kind: m[1] ?? 'link', name: (m[2] !== undefined ? m[2].replace(/\\(.)/g, '$1') : m[3]).trim() };
+}
+
+/**
+ * The ref whose name is `query` (exactly, then at the start, then anywhere,
+ * in any case), of the kind it names first if it does ("button Save").
+ * Several that fit equally well are an error listing them; none is null, or
+ * an error when `surely`.
+ */
+function matchRef(labels: Map<number, string>, query: string, surely: boolean): number | null {
+  let kind = '';
+  let name = query.replace(/^["']|["']$/g, '');
+  const m = /^(\w+)\s+(.+)$/.exec(name);
+  if (m && KINDS.has(m[1].toLowerCase())) {
+    kind = m[1].toLowerCase();
+    name = m[2].replace(/^["']|["']$/g, '');
+  }
+  const want = name.toLowerCase();
+  const pool = [...labels].map(([ref, label]) => ({ ref, label, ...parseLabel(label) })).filter((p) => !kind || p.kind === kind);
+  for (const fits of [(n: string) => n === want, (n: string) => n.startsWith(want), (n: string) => n.includes(want)]) {
+    const found = pool.filter((p) => p.name && fits(p.name.toLowerCase()));
+    if (found.length === 1) return found[0].ref;
+    if (found.length > 1) {
+      const list = found.slice(0, 8).map((f) => f.label).join(', ');
+      throw new Error(`"${query}" fits ${found.length} elements: ${list}${found.length > 8 ? ', …' : ''}; use its number, or say which kind ("button ${name}")`);
+    }
+  }
+  if (!surely) return null;
+  throw new Error(`nothing on the page is called "${query}"; find or snapshot shows what is`);
+}
+
+/** What extract can give: the tables and runs of items, numbered, with where they are. */
+function dataList(s: Snap, data: PageData): string {
+  const out = [...s.header, ''];
+  if (!data.tables.length && !data.lists.length) return [...out, 'extract: this page has no tables or runs of repeated items'].join('\n');
+  if (data.tables.length) {
+    out.push('tables:');
+    data.tables.forEach((t, i) => {
+      const cols = Math.max(t.header?.length ?? 0, ...t.rows.map((r) => r.length));
+      const name = t.caption ? ` "${t.caption}"` : t.header ? ` (${t.header.slice(0, 4).join(', ')}${t.header.length > 4 ? ', …' : ''})` : '';
+      out.push(`  ${i + 1}.${name} ${plural(t.rows.length, 'row')} × ${plural(cols, 'column')}${t.where ? ` · ${t.where}` : ''}`);
+    });
+  }
+  if (data.lists.length) {
+    out.push('runs of items:');
+    data.lists.forEach((l, i) => {
+      const first = l.items[0]?.link || l.items[0]?.text || '';
+      out.push(`  ${i + 1}. ${plural(l.items.length, 'item')}${l.where ? ` · ${l.where}` : ''} · first: ${first.length > 60 ? first.slice(0, 59) + '…' : first}`);
+    });
+  }
+  out.push('', 'get one with: extract table <n> (JSON rows, or --csv), extract items <n>');
+  return out.join('\n');
+}
+
+const csvRow = (cells: string[]) => cells.map((c) => (/[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c)).join(',');
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
+
+const hostOf = (url: string) => {
+  try {
+    return new URL(url).host;
+  } catch {
+    return '';
+  }
+};
+
+const pathOf = (url: string) => {
+  try {
+    const u = new URL(url);
+    return u.pathname + u.search;
+  } catch {
+    return url;
+  }
+};
+
+/** A script and line, short: app.js:12. */
+const shortWhere = (where: string) => /([^/?#]+?(?::\d+)?)$/.exec(where.replace(/[?#][^:]*/, ''))?.[1] ?? where;
+
+/** A request that went wrong: an error status, or a failure other than being canceled. */
+const requestFailed = (r: RequestEntry) => (r.status !== undefined && r.status >= 400) || (!!r.failed && r.failed !== 'canceled');
+
+/** How a request went wrong: its error status, or why it got none. */
+const failure = (r: RequestEntry) => (r.failed && r.failed !== 'canceled' ? r.failed : String(r.status ?? r.failed ?? '…'));
+
 const fullText = (s: Snap, links = false) =>
   [...s.header, '', ...s.body, ...(links && s.links.length ? ['', '── links ──', ...s.links] : [])].join('\n');
 
@@ -234,6 +329,7 @@ export class Session {
   private tabs: Page[]; // open tabs, in the order they opened; `page` is the current one
   private openers = new Map<Page, Page>(); // the tab each popup came from, to return to when it closes
   private refs: { doc: string; map: RefMap } | null = null; // page-wide ref numbers for the current document
+  private lastModel: PageModel | null = null; // the last page model read (for extract)
   private acting = 0; // commands running now; a navigation they cause is theirs to report
   private timing: { action?: number; settle?: number; read?: number } = {}; // the last command's, in ms
   private changePending = false;
@@ -638,6 +734,173 @@ export class Session {
     });
   }
 
+  // ---- finding things, and naming them -----------------------------------------------
+
+  /**
+   * The lines of the page that have `text` (in any case), each with a line
+   * around it and where it is on the page, as diff hunks are labelled. The
+   * refs in them work as usual.
+   */
+  async find(client: string, text: string, { context = 1 } = {}): Promise<string> {
+    const want = text.trim().toLowerCase();
+    if (!want) throw new Error('find needs some text to look for');
+    if (this.dialog) return this.dialogText();
+    await this.ensureTab();
+    const snap = await this.capture();
+    this.baselines.set(client, snap);
+    const hits = snap.body.flatMap((l, i) => (l.toLowerCase().includes(want) ? [i] : []));
+    const head = [...this.takeNotes(), ...snap.header, ''];
+    if (!hits.length) return [...head, `find "${text}": no line has it (the page has ${snap.body.length} lines)`].join('\n');
+    const groups: [number, number, number][] = []; // start, end, first hit
+    for (const i of hits) {
+      const start = Math.max(0, i - context);
+      const end = Math.min(snap.body.length, i + context + 1);
+      const last = groups[groups.length - 1];
+      if (last && start <= last[1]) last[1] = end;
+      else groups.push([start, end, i]);
+    }
+    const hit = new Set(hits);
+    const out = [...head, `find "${text}": ${hits.length} of the page's ${snap.body.length} lines (> marks them)`];
+    for (const [start, end, first] of groups.slice(0, 40)) {
+      const where = whereIs(snap.body, first);
+      out.push(where ? `@@ ${where} @@` : '@@');
+      for (let i = start; i < end; i++) out.push(`${hit.has(i) ? '>' : ' '} ${snap.body[i]}`);
+    }
+    if (groups.length > 40) out.push(`… and ${groups.length - 40} more places; look for something more particular`);
+    return out.join('\n');
+  }
+
+  /**
+   * A ref from its number, or from the element's name as snapshots show it:
+   * "Add to cart", or "button Add to cart" to say which kind. Names are looked
+   * up on the page as the client last saw it, then as it is now, so they keep
+   * working after the numbers have moved on. A name that fits several
+   * elements is an error listing them, never a guess.
+   */
+  async resolveRef(client: string, value: unknown): Promise<number> {
+    const raw = String(value ?? '').trim();
+    if (/^\d+$/.test(raw)) {
+      const n = Number(raw);
+      if (n < 1) throw new Error(`"${raw}" is not a ref; refs are the numbers in a snapshot`);
+      return n;
+    }
+    if (!raw) throw new Error('which element? give its ref, or its name');
+    if (this.dialog) throw new Error(this.dialogText());
+    await this.ensureTab();
+    const doc = await this.call<string | null>('doc');
+    const seen = this.baselines.get(client);
+    if (seen && seen.doc === doc) {
+      const ref = matchRef(seen.labels, raw, false);
+      if (ref !== null) return ref;
+    }
+    const snap = await this.capture();
+    this.baselines.set(client, snap);
+    return matchRef(snap.labels, raw, true)!;
+  }
+
+  /**
+   * A result over `max` characters: what happened (its first line and any
+   * notes), then the page's outline in place of the page, saying so.
+   */
+  limit(client: string, text: string, max: number): string {
+    if (!max || text.length <= max) return text;
+    const snap = this.baselines.get(client);
+    const kb = (n: number) => `${Math.round(n / 1000)} KB`;
+    const note = `the result is ${kb(text.length)}, over your limit of ${kb(max)}, so here is the page's outline instead: read a part with section, look for something with find, or read an article's main text with reader`;
+    if (!snap) return `${text.slice(0, max)}\n[cut at ${max} characters]`;
+    const lines = text.split('\n');
+    const lead = [lines[0], ...lines.filter((l) => l.startsWith('note: '))].filter((l) => l && l !== snap.header[0]);
+    const out = [...new Set(lead), note, '', outlineText(snap)].join('\n');
+    return out.length > max ? `${out.slice(0, max)}\n[cut at ${max} characters]` : out;
+  }
+
+  // ---- data --------------------------------------------------------------------
+
+  /**
+   * The page's tables and runs of repeated items, listed; or one of them as
+   * data: a table as JSON rows (objects keyed by its header) or CSV, a run of
+   * items as JSON (each with its text, its link's ref, words and address).
+   */
+  async extractData(client: string, { kind = '', n = 0, csv = false } = {}): Promise<string> {
+    if (this.dialog) return this.dialogText();
+    await this.ensureTab();
+    const snap = await this.capture();
+    this.baselines.set(client, snap);
+    const data = pageData(this.lastModel!);
+    if (!kind) return dataList(snap, data);
+    if (kind === 'table') {
+      const t = data.tables[n - 1];
+      if (!t) throw new Error(`there is no table ${n}; the page has ${data.tables.length}`);
+      if (csv) return [t.header, ...t.rows].filter((r): r is string[] => !!r).map(csvRow).join('\n');
+      const rows = t.header ? t.rows.map((r) => Object.fromEntries(t.header!.map((h, i) => [h || `column ${i + 1}`, r[i] ?? '']))) : t.rows;
+      return JSON.stringify(rows, null, 1);
+    }
+    if (kind === 'items') {
+      const l = data.lists[n - 1];
+      if (!l) throw new Error(`there is no list of items ${n}; the page has ${data.lists.length}`);
+      if (csv) return [['text', 'ref', 'link', 'href'], ...l.items.map((i) => [i.text, String(i.ref ?? ''), i.link ?? '', i.href ?? ''])].map(csvRow).join('\n');
+      return JSON.stringify(l.items, null, 1);
+    }
+    throw new Error(`extract table <n> or extract items <n>, not "${kind}"`);
+  }
+
+  // ---- the console and the network -----------------------------------------------
+
+  /** What the page logged: errors and warnings (all of it with `all`), newest last. */
+  async consoleText({ all = false } = {}): Promise<string> {
+    await this.ensureTab();
+    const fresh = !this.page.watchingConsole;
+    await this.page.watchConsole();
+    if (fresh) await sleep(200); // what the browser kept from before arrives now
+    const entries = this.page.console;
+    const shown = entries.filter((e) => all || e.level === 'error' || e.level === 'warning');
+    const errors = entries.filter((e) => e.level === 'error').length;
+    const warnings = entries.filter((e) => e.level === 'warning').length;
+    const head = `console: ${plural(errors, 'error')}, ${plural(warnings, 'warning')} (${plural(entries.length, 'message')} since the page loaded)`;
+    const lines = shown.slice(-100).map((e) => `${e.level.padEnd(7)}  ${e.text}${e.where ? `  · ${shortWhere(e.where)}` : ''}`);
+    const more = shown.length > 100 ? [`… ${shown.length - 100} earlier ones left out`] : [];
+    const hint = !all && entries.length > shown.length ? ['(--all for every message)'] : [];
+    return [head, ...more, ...lines, ...hint].join('\n');
+  }
+
+  /** The page's requests that failed (every request with `all`), in the order they were made. */
+  async networkText({ all = false } = {}): Promise<string> {
+    await this.ensureTab();
+    const requests = [...this.page.requests.values()];
+    const failed = requests.filter(requestFailed);
+    const shown = all ? requests : failed;
+    const head = `network: ${plural(requests.length, 'request')}, ${failed.length} failed`;
+    const lines = shown.slice(-200).map((r) => {
+      const how = failure(r);
+      return `${how.padEnd(4)}  ${r.method} ${r.url.length > 160 ? r.url.slice(0, 159) + '…' : r.url}  (${r.type})`;
+    });
+    const more = shown.length > 200 ? [`… ${shown.length - 200} earlier ones left out`] : [];
+    return [head, ...more, ...lines, ...(!all && requests.length ? ['(--all for every request)'] : [])].join('\n');
+  }
+
+  /**
+   * Notes on what went wrong while an action ran (since `since`): errors the
+   * page logged, and its own site's requests for pages, scripts and data that
+   * failed. Other sites' (ads, trackers) are left to `network`.
+   */
+  private problemNotes(since: number): string[] {
+    const notes: string[] = [];
+    const errors = this.page.console.filter((e) => e.at >= since && e.level === 'error');
+    if (errors.length) {
+      const first = errors[0].text.length > 140 ? errors[0].text.slice(0, 139) + '…' : errors[0].text;
+      notes.push(`the page logged ${plural(errors.length, 'error')}: ${first}${errors.length > 1 ? ' …' : ''} (console shows them)`);
+    }
+    const site = siteOf(hostOf(this.page.document?.url ?? ''));
+    const failed = [...this.page.requests.values()].filter(
+      (r) => r.at >= since && requestFailed(r) && /^(Document|Script|Stylesheet|XHR|Fetch)$/.test(r.type) && siteOf(hostOf(r.url)) === site,
+    );
+    if (failed.length) {
+      const list = failed.slice(0, 3).map((r) => `${failure(r)} ${r.method} ${pathOf(r.url)}`);
+      notes.push(`${plural(failed.length, 'request')} failed: ${list.join(', ')}${failed.length > 3 ? ', …' : ''} (network shows them)`);
+    }
+    return notes;
+  }
+
   // ---- page info and source ---------------------------------------------------
 
   /** The connection, cookies and site data, what the page says about itself, and what loading it took (see info.ts). */
@@ -682,6 +945,12 @@ export class Session {
       cookies,
       storage,
       about,
+      problems: {
+        heard: this.page.watchingConsole,
+        errors: this.page.console.filter((e) => e.level === 'error').map((e) => e.text),
+        warnings: this.page.console.filter((e) => e.level === 'warning').length,
+        failed: [...this.page.requests.values()].filter(requestFailed).map((r) => `${failure(r)} ${r.method} ${r.url}`),
+      },
     };
   }
 
@@ -953,6 +1222,7 @@ export class Session {
       this.dialogWaiters.add(wake);
     });
     const page = this.page;
+    const since = Date.now(); // what went wrong from here on is this action's (see problemNotes)
     const downloadsBefore = this.downloadsStarted;
     const t0 = performance.now();
     const work = (async () => {
@@ -972,6 +1242,7 @@ export class Session {
     } finally {
       this.dialogWaiters.delete(wake);
     }
+    if (!this.dialog) this.notes.push(...this.problemNotes(since));
     return this.report(client, typeof what === 'function' ? what() : what, outcome);
   }
 
@@ -1010,6 +1281,7 @@ export class Session {
       model = await this.extract();
     }
     const r = renderParts(model);
+    this.lastModel = model;
     this.timing.read = performance.now() - t0;
     return { doc: model.doc, url: model.url, title: model.title, ...r };
   }

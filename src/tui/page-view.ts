@@ -39,10 +39,13 @@ export const GRID_LABELS: Record<GridMode, string> = {
 };
 
 // Per-character styles are small integers indexing these.
-const FG: RGBA[] = [THEME.text, THEME.dim, THEME.link, THEME.control, THEME.heading, THEME.landmark, THEME.code, THEME.findFg];
-const [TEXT, DIM, LINK, CONTROL, HEADING, LANDMARK, CODE, FIND_FG] = FG.map((_, i) => i);
-const BG: (RGBA | undefined)[] = [undefined, THEME.findBg, THEME.findCurrentBg];
-const [NO_BG, FIND_BG, CURRENT_BG] = BG.map((_, i) => i);
+const FG: RGBA[] = [
+  THEME.text, THEME.dim, THEME.link, THEME.control, THEME.heading, THEME.landmark, THEME.code, THEME.findFg, RGBA.fromHex('#16181c'),
+];
+const [TEXT, DIM, LINK, CONTROL, HEADING, LANDMARK, CODE, FIND_FG, AGENT_TEXT] = FG.map((_, i) => i);
+const BG: (RGBA | undefined)[] = [undefined, THEME.findBg, THEME.findCurrentBg, THEME.agent];
+const [NO_BG, FIND_BG, CURRENT_BG, AGENT_BG] = BG.map((_, i) => i);
+const TAG_FG = RGBA.fromHex('#16181c'); // on the agent's and your cursor tags
 const PLACEHOLDER = RGBA.fromHex('#d5d9df'); // a picture not loaded yet
 // Pictures are drawn smaller than the space they had, centered in it, so they
 // don't crowd the text. Backgrounds keep their full size.
@@ -279,6 +282,7 @@ export class PageView extends Renderable {
   private topRow = 0;
   private anchorLine = 0; // the line at the top of the view, kept across re-layout
   private selected: number | null = null;
+  private agentRefs = new Set<number>(); // where an agent is acting (see setAgentCursor)
   private matches: Match[] = [];
   private currentMatch = -1;
   private onActivate?: (ref: PageRef) => void;
@@ -306,7 +310,10 @@ export class PageView extends Renderable {
     this.changed = changed;
     this.groups = new Map(layout.map((g) => [`${g.depth}:${g.cells[0].start}`, g]));
     this.visual = visual;
-    if (fresh) this.setPicture(null);
+    if (fresh) {
+      this.setPicture(null);
+      this.agentRefs = new Set(); // the agent's cursor was on the old page
+    }
     let inFence = false;
     this.fenced = lines.map((l) => {
       if (l.startsWith('```')) {
@@ -994,6 +1001,9 @@ export class PageView extends Renderable {
         for (let i = r.end; i < r.textEnd; i++) attrs[i] |= TextAttributes.UNDERLINE;
         if (r.ref === this.selected) {
           for (let i = r.start; i < Math.max(r.end, r.textEnd); i++) attrs[i] |= TextAttributes.INVERSE;
+        } else if (this.agentRefs.has(r.ref)) {
+          bg.fill(AGENT_BG, r.start, Math.max(r.end, r.textEnd));
+          fg.fill(AGENT_TEXT, r.start, Math.max(r.end, r.textEnd));
         }
       }
     }
@@ -1034,6 +1044,50 @@ export class PageView extends Renderable {
       this.drawCanvas(buffer, x0, top, bottom, k + 1);
       this.drawText(buffer, x0, top, styles, k + 1);
     });
+    // Whose cursor is where, while an agent's is showing: its first ref, and your selection.
+    const [agent] = this.agentRefs;
+    if (agent !== undefined) {
+      this.drawTag(buffer, x0, top, agent, ' agent ', THEME.agent);
+      if (this.selected !== null && !this.agentRefs.has(this.selected)) this.drawTag(buffer, x0, top, this.selected, ' you ', THEME.accentBg);
+    }
+  }
+
+  /** A small tag under a ref (over it on the last row), like a named cursor. */
+  private drawTag(buffer: OptimizedBuffer, x0: number, top: number, ref: number, text: string, bg: RGBA) {
+    const at = this.refCell(ref);
+    if (!at) return;
+    const row = at.row + 1 < top + this.visibleRows ? at.row + 1 : at.row - 1;
+    if (row < top) return;
+    const x = Math.min(at.x, Math.max(0, this.width - GUTTER - text.length));
+    buffer.drawText(text, x0 + x, this.screenY + row - top, TAG_FG, bg, TextAttributes.BOLD);
+  }
+
+  /** Where a ref's first character is drawn: its row and column in the view's rows. */
+  private refCell(ref: number): { row: number; x: number } | null {
+    const r = this.hasRef(ref);
+    if (!r) return null;
+    const first = this.rowOfLine[r.line];
+    if (first === undefined || first < 0) return null;
+    for (let row = first; row < this.rows.length; row++) {
+      const p = this.rows[row].pieces.find((q) => q.line === r.line && r.start >= q.start && r.start < q.end);
+      if (p) return { row, x: p.x + Bun.stringWidth(this.lines[r.line].slice(p.start, r.start)) };
+      if (!this.rows[row].pieces.some((q) => q.line === r.line)) break;
+    }
+    return null;
+  }
+
+  /** Mark where an agent is acting (its refs), or clear it with none. */
+  setAgentCursor(refs: number[]) {
+    this.agentRefs = new Set(refs.filter((r) => this.hasRef(r)));
+    this.requestRender();
+  }
+
+  /** Scroll so a ref shows, without selecting it (to follow an agent). */
+  showRef(ref: number) {
+    this.layout();
+    const r = this.hasRef(ref);
+    if (r) this.reveal(this.rowAt(r.line, r.start));
+    this.requestRender();
   }
 
   /** The rows' text in one layer (0 for the page itself). */

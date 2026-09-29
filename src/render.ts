@@ -190,6 +190,94 @@ export function mainText(body: string[], visual: Visual): string[] | null {
   return out;
 }
 
+/** The page's data: its tables, and runs of repeated items with links (results, cards, products). */
+export interface PageData {
+  tables: { where: string; caption?: string; header: string[] | null; rows: string[][] }[];
+  lists: { where: string; items: { text: string; ref?: number; link?: string; href?: string }[] }[];
+}
+
+// Refs in text, [7] before a link and [8 button "Save"] for controls, and
+// [img "…"] labels and heading marks: data leaves them out.
+const REF_MARKS = /\[\d+(?: [a-z]+(?: "(?:[^"\\]|\\.)*")?[^\]]*)?\]/g;
+const EMBED_MARKS = /\[(?:img|iframe|video|audio|canvas|embed)(?: "(?:[^"\\]|\\.)*")?\]/g;
+const plain = (s: string) =>
+  s.replace(REF_MARKS, ' ').replace(EMBED_MARKS, ' ').replace(/(^|\s)#{1,6} /g, '$1').replace(/\s+/g, ' ').trim();
+// Menus and footers are lists of links too, but not data.
+const NOT_DATA = new Set(['navigation', 'banner', 'contentinfo', 'search']);
+
+/**
+ * Tables and runs of repeated items, each with where it is on the page (its
+ * landmark and the heading before it), for extract.
+ */
+export function pageData(page: PageModel): PageData {
+  const r = new Renderer();
+  const out: PageData = { tables: [], lists: [] };
+  let heading = '';
+  // Links, and whether each is in a heading or holds one (a result's title).
+  const linksIn = (n: El, inHeading = false, found: { l: El; titled: boolean }[] = []) => {
+    const titled = inHeading || !!n.h;
+    if (n.ref !== undefined && n.k === 'link') found.push({ l: n, titled: titled || holdsHeading(n) });
+    for (const c of n.c ?? []) if (typeof c === 'object') linksIn(c, titled, found);
+    return found;
+  };
+  const holdsHeading = (n: El): boolean => !!n.h || (n.c ?? []).some((c) => typeof c === 'object' && holdsHeading(c));
+  const linkText = (l: El) => plain(l.n ?? r.inlineText(l.c));
+  // An item's link: its title (a link in a heading), else its longest (a
+  // story's title rather than its "upvote"), when links are a fair part of it
+  // (not a paragraph with a link or two in it).
+  const itemLink = (b: El): El | undefined => {
+    const links = linksIn(b);
+    if (!links.length) return undefined;
+    const text = plain(r.inlineText([b])).length || 1;
+    const linked = links.reduce((n, { l }) => n + linkText(l).length, 0);
+    if (linked / text < 0.2 && text > 150) return undefined;
+    const titles = links.filter((x) => x.titled);
+    const pool = (titles.length ? titles : links).map((x) => x.l);
+    return pool.reduce((a, l) => (linkText(l).length > linkText(a).length ? l : a));
+  };
+  const visit = (n: El, landmarks: string[]) => {
+    if (n.h) heading = `${'#'.repeat(n.h)} ${plain(r.inlineText(n.c))}`;
+    const lms = n.lm ? [...landmarks, `${LANDMARK_NAMES[n.lm] ?? n.lm}${n.lmn ? ` ${quote(n.lmn)}` : ''}`] : landmarks;
+    const where = [...lms, heading].filter(Boolean).join(' › ');
+    if (n.rows) {
+      const rows = n.rows.map((row) => row.map((cell) => plain(r.inlineText(cell.c))));
+      const header = n.rows[0]?.length && n.rows[0].every((cell) => cell.th) ? rows.shift()! : null;
+      if (rows.length) out.tables.push({ where, caption: n.cap, header, rows });
+      return;
+    }
+    // Three or more blocks in one parent that look alike (the same element,
+    // about as wide, not much text each), most with a link: results, cards,
+    // products. Not a page's regions, and not menus.
+    const blocks = (n.c ?? []).filter((c): c is El => typeof c === 'object' && (c.d === 'b' || !!c.li) && !c.lm);
+    const byTag = new Map<string, El[]>();
+    for (const b of blocks) byTag.set(b.tag, [...(byTag.get(b.tag) ?? []), b]);
+    const alike = [...byTag.values()].sort((a, b) => b.length - a.length)[0] ?? [];
+    const widths = alike.flatMap((b) => (b.r ? [b.r[2]] : []));
+    const even = widths.length < 2 || Math.max(...widths) <= 1.6 * Math.max(1, Math.min(...widths));
+    const linked = alike.map((b) => [b, itemLink(b)] as const).filter(([, l]) => l);
+    const short = linked.every(([b]) => r.inlineText([b]).length <= 600);
+    const menu = n.lm ? NOT_DATA.has(n.lm) : landmarks.some((l) => /^(nav|header|footer|search)\b/.test(l));
+    if (!menu && even && short && linked.length >= 3 && linked.length >= 0.6 * blocks.length) {
+      out.lists.push({
+        where,
+        items: linked.map(([b, l]) => {
+          const text = plain(r.inlineText([b]));
+          return {
+            text: text.length > 300 ? text.slice(0, 299) + '…' : text,
+            ref: l!.ref,
+            link: linkText(l!) || undefined,
+            href: l!.href,
+          };
+        }),
+      });
+      return;
+    }
+    for (const c of n.c ?? []) if (typeof c === 'object') visit(c, lms);
+  };
+  if (page.root) visit(page.root, []);
+  return out;
+}
+
 export function render(page: PageModel, { links = false } = {}): string {
   const p = renderParts(page);
   const out = [...p.header, '', ...p.body];
@@ -353,7 +441,7 @@ class Renderer {
     return st.lines;
   }
 
-  private inlineText(children: Node[] = []): string {
+  inlineText(children: Node[] = []): string {
     return this.contents(children).filter(nonEmpty).map(stripTags).join(' ');
   }
 

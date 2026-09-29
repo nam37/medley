@@ -19,6 +19,7 @@
     "test:tui": "bun test/tui-smoke.ts",
     "test:frames": "bun test/frames.ts",
     "test:idle": "bun test/idle.ts",
+    "test:agent": "bun test/agent.ts",
     "image-compare": "bun scripts/image-compare.ts"
   },
   "dependencies": {

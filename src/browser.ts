@@ -153,6 +153,51 @@ export interface DocumentResponse {
   };
 }
 
+/** Something the page logged to its console, or an error it didn't catch. */
+export interface ConsoleEntry {
+  at: number;
+  level: 'error' | 'warning' | 'info' | 'log' | 'debug';
+  text: string;
+  where?: string; // script:line
+}
+
+/** A request the page made, and how it went: a status, or why it failed. */
+export interface RequestEntry {
+  at: number;
+  url: string;
+  method: string;
+  type: string; // Document, Script, XHR, Fetch, Image, …
+  status?: number;
+  failed?: string; // net::ERR_…, blocked (…), canceled
+  loader: string;
+}
+
+const MAX_CONSOLE = 500;
+const MAX_REQUESTS = 2000;
+// A page being developed: its console is heard from the start (see Page.watchConsole).
+const LOCAL_PAGE = /^(file:|https?:\/\/(localhost|127\.0\.0\.1|\[::1\]|[^/:]+\.localhost|[^/:]+\.test)(:\d+)?(\/|$))/i;
+
+interface Preview {
+  subtype?: string;
+  overflow?: boolean;
+  properties?: { name: string; type: string; value?: string }[];
+}
+
+/** A console argument as text: a string as it is, an object as its preview ({code: 42}), anything else as the console describes it. */
+function describeArg(a: { type: string; subtype?: string; value?: unknown; description?: string; unserializableValue?: string; preview?: Preview }): string {
+  if (a.type === 'string') return String(a.value);
+  if (a.unserializableValue) return a.unserializableValue;
+  if (a.value !== undefined) return typeof a.value === 'object' ? JSON.stringify(a.value) : String(a.value);
+  const p = a.preview;
+  if (p?.properties && a.subtype !== 'error') {
+    const more = p.overflow ? ', …' : '';
+    const value = (v: { type: string; value?: string }) => (v.type === 'string' ? JSON.stringify(v.value) : (v.value ?? v.type));
+    if (p.subtype === 'array') return `[${p.properties.map(value).join(', ')}${more}]`;
+    return `{${p.properties.map((v) => `${v.name}: ${value(v)}`).join(', ')}${more}}`;
+  }
+  return a.description ?? a.type;
+}
+
 /** A frame of the page, and the CDP session that owns its document. */
 interface Frame {
   session: string;
@@ -183,6 +228,10 @@ export class Page {
     return this.attaching.size > 0 || Date.now() - this.framesChangedAt < 2000;
   }
   document: DocumentResponse | null = null; // how the page's document arrived
+  // The current document's console messages and requests, oldest first (as DevTools keeps them).
+  console: ConsoleEntry[] = [];
+  requests = new Map<string, RequestEntry>();
+  private consoleOn = false; // see watchConsole
   onDialog: ((d: Dialog) => void) | null = null;
   onNavigated: (() => void) | null = null; // the main frame got a new document
   closed = false; // the tab went away; waiting on it is pointless
@@ -200,15 +249,45 @@ export class Page {
       switch (method) {
         case 'Network.requestWillBeSent':
           this.requestStarted(p);
+          this.logRequest(p);
           break;
         case 'Network.loadingFinished':
-        case 'Network.loadingFailed':
           this.inflight.delete(p.requestId);
           break;
-        case 'Network.responseReceived':
+        case 'Network.loadingFailed': {
+          this.inflight.delete(p.requestId);
+          const r = this.requests.get(p.requestId);
+          if (r) r.failed = p.blockedReason ? `blocked (${p.blockedReason})` : p.canceled ? 'canceled' : p.errorText;
+          break;
+        }
+        case 'Network.responseReceived': {
           // The main frame's id is its target's.
           if (p.type === 'Document' && (p.frameId === this.mainFrameId || p.frameId === this.targetId)) this.documentResponse(p);
+          const r = this.requests.get(p.requestId);
+          if (r) r.status = p.response.status;
           break;
+        }
+        case 'Runtime.consoleAPICalled': {
+          const level = p.type === 'error' || p.type === 'assert' ? 'error' : p.type === 'warning' ? 'warning' : p.type === 'info' ? 'info' : p.type === 'debug' ? 'debug' : 'log';
+          const frame = p.stackTrace?.callFrames?.[0];
+          this.logConsole(level, (p.args ?? []).map(describeArg).join(' '), frame ? `${frame.url}:${frame.lineNumber + 1}` : undefined);
+          break;
+        }
+        case 'Runtime.exceptionThrown': {
+          const d = p.exceptionDetails;
+          const what = d.exception?.description?.split('\n')[0] ?? d.exception?.value ?? '';
+          this.logConsole('error', `${d.text}${what ? ` ${what}` : ''}`, d.url ? `${d.url}:${d.lineNumber + 1}` : undefined);
+          break;
+        }
+        case 'Log.entryAdded': {
+          // The browser's own messages about the page's scripts and security (blocked
+          // content, CSP). Failed requests are kept as requests, and the rest (sign-in
+          // prompts, violations, interventions) is about the browser, not the page.
+          const e = p.entry;
+          if (!/^(javascript|security)$/.test(e.source) || !/^(error|warning)$/.test(e.level)) break;
+          this.logConsole(e.level, e.text, e.url ? `${e.url}${e.lineNumber !== undefined ? `:${e.lineNumber + 1}` : ''}` : undefined);
+          break;
+        }
         case 'Page.frameStartedLoading':
           if (p.frameId === this.mainFrameId) this.loading = true;
           break;
@@ -231,6 +310,10 @@ export class Page {
             this.frames.set(p.frame.id, { session: this.sessionId, parentId: null });
             // Requests of the old document may never report finishing; they no longer matter.
             for (const [id, r] of this.inflight) if (r.loader !== p.frame.loaderId) this.inflight.delete(id);
+            // Its console and requests start over, the new document's own request kept.
+            this.console = [];
+            for (const [id, r] of this.requests) if (r.loader !== p.frame.loaderId) this.requests.delete(id);
+            if (LOCAL_PAGE.test(p.frame.url)) void this.watchConsole();
             this.onNavigated?.();
           }
           break;
@@ -243,6 +326,7 @@ export class Page {
     });
     await this.send('Page.enable');
     await this.send('Network.enable');
+    await this.send('Log.enable'); // browser messages: blocked content, security; see watchConsole for the page's own
     const { frameTree } = await this.send('Page.getFrameTree');
     this.mainFrameId = frameTree.frame.id;
     this.addFrameTree(this.sessionId, frameTree, null);
@@ -537,6 +621,41 @@ export class Page {
   }
 
   /** Note a request that could change what the page shows (see IGNORED_REQUESTS). */
+  private logRequest(p: { requestId: string; type?: string; loaderId?: string; request: { url: string; method: string } }) {
+    if (p.request.url.startsWith('data:')) return;
+    const known = this.requests.get(p.requestId);
+    if (known) {
+      known.url = p.request.url; // a redirect goes on under the same id
+      known.status = undefined;
+      return;
+    }
+    this.requests.set(p.requestId, { at: Date.now(), url: p.request.url, method: p.request.method, type: p.type ?? 'Other', loader: p.loaderId ?? '' });
+    if (this.requests.size > MAX_REQUESTS) this.requests.delete(this.requests.keys().next().value!);
+  }
+
+  /**
+   * Hear the page's console messages and uncaught errors from now on (and the
+   * ones the browser kept from before). Off until asked, or until a local
+   * development page opens: the protocol's Runtime domain, which reports them,
+   * describes every value logged, and bot checks watch for exactly that.
+   */
+  async watchConsole() {
+    if (this.consoleOn) return;
+    this.consoleOn = true;
+    await this.send('Runtime.enable').catch(() => {
+      this.consoleOn = false;
+    });
+  }
+
+  get watchingConsole(): boolean {
+    return this.consoleOn;
+  }
+
+  private logConsole(level: ConsoleEntry['level'], text: string, where?: string) {
+    this.console.push({ at: Date.now(), level, text: text.length > 1000 ? text.slice(0, 999) + '…' : text, where });
+    if (this.console.length > MAX_CONSOLE) this.console.shift();
+  }
+
   private requestStarted(p: { requestId: string; type?: string; loaderId?: string; frameId?: string }) {
     if (p.type && IGNORED_REQUESTS.has(p.type)) return;
     // A frame's own page is reported finished in the frame's session, which

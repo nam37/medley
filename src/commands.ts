@@ -23,9 +23,12 @@ export interface CommandFlags {
   dom?: boolean; // source --dom
   reader?: boolean; // goto, search, snapshot --reader
   json?: boolean; // info --json (the CLI's own option)
+  all?: boolean; // console --all, network --all
+  csv?: boolean; // extract … --csv
+  max?: number; // a size limit on page results (the CLI's --max)
 }
 
-const FLAGS = new Set(['--links', '--diff', '--submit', '--hard', '--outline', '--full', '--new-tab', '--dom', '--reader']);
+const FLAGS = new Set(['--links', '--diff', '--submit', '--hard', '--outline', '--full', '--new-tab', '--dom', '--reader', '--all', '--csv']);
 
 export class UsageError extends Error {}
 
@@ -90,8 +93,8 @@ export function parseCommand([command, ...rest]: string[], flags: CommandFlags =
         args: { diff: flags.diff, links: flags.links, outline: flags.outline, section: flags.section, reader: flags.reader },
       };
     case 'click':
-      need(1, 'click <ref> [--new-tab]');
-      return { cmd: 'click', args: { ref: rest[0], newTab: flags.newTab } };
+      need(1, 'click <ref or name> [--new-tab]');
+      return { cmd: 'click', args: { ref: rest.join(' '), newTab: flags.newTab } }; // a name needs no quotes here
     case 'type':
       need(1, 'type <ref> <text> [--submit]');
       return { cmd: 'type', args: { ref: rest[0], text: rest.slice(1).join(' '), submit: flags.submit } };
@@ -103,7 +106,7 @@ export function parseCommand([command, ...rest]: string[], flags: CommandFlags =
       return { cmd: 'press', args: { key: rest[0] } };
     case 'hover':
       need(1, 'hover <ref>');
-      return { cmd: 'hover', args: { ref: rest[0] } };
+      return { cmd: 'hover', args: { ref: rest.join(' ') } };
     case 'tabs':
       return { cmd: 'tabs', args: {} };
     case 'newtab':
@@ -130,6 +133,22 @@ export function parseCommand([command, ...rest]: string[], flags: CommandFlags =
       return { cmd: command, args: {} };
     case 'info':
       return { cmd: 'info', args: { json: flags.json } };
+    case 'find':
+      need(1, 'find <text>');
+      return { cmd: 'find', args: { text: rest.join(' ') } };
+    case 'console':
+      return { cmd: 'console', args: { all: flags.all } };
+    case 'network':
+      return { cmd: 'network', args: { all: flags.all } };
+    case 'extract':
+      if (rest[0] && rest[0] !== 'table' && rest[0] !== 'items') throw new UsageError('usage: extract [table <n> | items <n>] [--csv]');
+      return { cmd: 'extract', args: { kind: rest[0], n: rest[1], csv: flags.csv } };
+    case 'ask':
+      need(1, 'ask <question> [choice…]');
+      return { cmd: 'ask-user', args: { question: rest[0], choices: rest.slice(1) } };
+    case 'tell':
+      need(1, 'tell <message>');
+      return { cmd: 'tell-user', args: { text: rest.join(' ') } };
     case 'source':
       return { cmd: 'source', args: { dom: flags.dom } };
     case 'wait':

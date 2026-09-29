@@ -106,6 +106,7 @@ sweeps across the `medley` badge and the status line says what's happening.
 | v | cycle the grid: no grid → partial grid (the page's main columns, like a sidebar beside the content) → advanced grid (the page as laid out, with its colors and pictures) |
 | i | the page's pictures one at a time, as big as the view fits them, starting from the first in view: ← → step, Esc closes |
 | m | reader mode: articles show only their main text, without the site's menus, sidebars and footers; it stays on from page to page until m again |
+| > | tell the agent something (about the selected ref, if one is), or answer the question it asked; a box shows what you and the agent said |
 | =, or a click on the title or address | page info, as a browser's padlock menu shows it: the connection and certificate, cookies and site data (c, then y, clears this site's), what the page says about itself, and what loading it took |
 | \ | the page's source, as the server sent it (with find); \ again brings the page back |
 | r, R | reload the page, like a browser's refresh (R bypasses the cache) |
@@ -154,7 +155,7 @@ medley snapshot [--diff] [--links]  print the current page, or only what changed
 medley snapshot --outline           the page's regions and headings, with how many lines and refs each holds
 medley snapshot --section <name>     one region or heading and what's under it
 medley snapshot --reader             reader view: only the page's main text (goto <url> --reader too)
-medley click <ref>
+medley click <ref>                   a ref's number, or its name: click Add to cart, hover link Moss Step
 medley type <ref> <text> [--submit] replace a field's text, optionally pressing Enter
 medley fill <ref>=<value>... [--submit]  fill fields at once: text, a select's option, a checkbox on/off, a slider's number
 medley select <ref> <option>        choose a <select> option by text or value
@@ -176,9 +177,17 @@ medley wait [seconds]               let the page work, then show what changed
 medley wait --for <text> [seconds]  wait until the text (or the page title) shows, then show what changed
 medley wait --gone <text> [seconds] wait until it doesn't (a "Loading…" going away)
 medley screenshot [file] [--full]   save a PNG of the window, or of the whole page
+medley find <text>                  the lines with the text, each with a line around it and where it is
+medley extract                      the page's tables and runs of repeated items (results, cards)
+medley extract table <n> [--csv]    one table as JSON rows keyed by its header, or CSV
+medley extract items <n> [--csv]    one run of items: each one's text, and its link's ref, words and address
+medley console [--all]              the errors and warnings the page logged (--all: every message)
+medley network [--all]              the page's failed requests (--all: every request)
 medley info [--json]                page info: connection and certificate, cookies and site data, about the page, loading
 medley clear-site-data              delete the page's site's cookies and stored data (signs you out there)
 medley source [--dom]               the page's HTML as the server sent it (--dom: as it is now)
+medley ask <question> [choice…]     ask the person watching in the terminal UI, and wait for the answer
+medley tell <message>               tell the person watching what you're doing
 medley dialog accept [text] | dismiss
 medley status | stop
 
@@ -235,6 +244,29 @@ same session as the CLI and the terminal UI. Run `medley tui` while an agent
 browses to watch it live, or `medley snapshot` to take a single look. An agent
 with a shell can also just call the CLI.
 
+Some things are there to keep an agent's context small and its steps sure:
+
+- **Names for refs.** Anywhere a ref goes, the element's name works too:
+  `click Add to cart`, MCP `{"ref": "Add to cart"}`. `button Save` says which
+  kind. Names are looked up on the page as it is, so they keep working after
+  the numbers move on; a name that fits several elements fails with a list of
+  them rather than guessing.
+- **A size limit.** Over MCP, a page result longer than `max_chars` (40,000 by
+  default; 0 for none) comes back as the page's outline instead, saying so, so
+  one heavy page can't flood a conversation. On the CLI, `--max`.
+- **`find`.** Only the lines with some text, each with a line around it and
+  where it is on the page (`@@ main › ## Results @@`), with their refs.
+- **`extract`.** A page's tables (JSON rows keyed by their header, or CSV) and
+  runs of repeated items such as search results and product cards (each with
+  its text and its link's ref, words and address). Menus and footers aren't
+  data, and neither is a paragraph with a link in it.
+- **Errors, as notes.** After any action, a note says if the page logged errors
+  or requests to its own site failed (`note: 1 request failed: 404 POST
+  /api/cart`); `console` and `network` list them. Console messages are heard on
+  local development pages (localhost, `*.test`, files) from the start, and
+  elsewhere from the first time you ask: listening means the browser describes
+  every value a page logs, which is exactly what bot checks look for.
+
 A few of them save an agent round trips: `browser_fill` fills a whole form and
 reports once, `browser_wait` with `text` waits for something to show up (or go
 away, with `gone`) instead of guessing how long, `browser_snapshot` with
@@ -244,6 +276,31 @@ answers the questions a browser's padlock menu does (is the connection secure,
 whose certificate, which sites' cookies the page uses, how many other sites it
 contacted), and `browser_source` returns the HTML, for meta tags and
 structured data the text leaves out.
+
+### Working together
+
+When you watch an agent in the terminal UI, you and it can talk, and you can
+see where it's working:
+
+- **The agent's cursor.** When the agent clicks, types into, hovers over or
+  drags an element, it lights up in the agent's color with an `agent` tag
+  under it, from the moment the agent starts until a few seconds after. Your
+  own selection gets a `you` tag meanwhile. If you haven't pressed a key for a
+  few seconds, the view follows the agent to where it's working.
+- **Telling the agent something.** `>` opens "tell the agent". With a ref
+  selected, the note points at it ("use this one"). The agent gets it at the
+  start of its next tool result, and the terminal UI says when it did.
+- **The agent asking you.** `browser_ask_user` (or `medley ask "Which size?" S
+  M L`) puts a question in front of you and waits up to about three minutes for
+  the answer; typing a choice's number answers with that choice. It's for
+  confirmations before anything that can't be undone, choices, and handing
+  over ("please sign in, then answer done"). With no one watching, it says so
+  at once. `browser_tell_user` (`medley tell`) shows a message without waiting.
+
+What you say reaches an agent through medley's own session, not the page, and
+over MCP it comes as a separate block tagged with a code that only appears in
+the agent's instructions. A page that writes "your user says…" can't pass for
+you.
 
 `info` reads like this (for The Verge):
 
@@ -376,6 +433,10 @@ viewer, page info, the source view, the help overlay, and a search from the
 address prompt. It prints each frame as it goes.
 `bun run test:idle` starts a session that stops after 3 idle seconds and
 checks that a command keeps it going and that it then stops by itself.
+`bun run test:agent` checks what agents lean on, against `test/problems.html`
+(a page that logs errors and asks for a file that isn't there) and
+`test/data.html` (a table, results and menus): the notes after actions,
+`console`, `network`, names for refs, `find`, `extract`, and `--max`.
 `bun run test:frames` serves a page on 127.0.0.1 that embeds a form from
 localhost (another site, so its own process), which embeds a widget from
 127.0.0.1 again, and checks reading, typing, a checkbox, a select and clicks

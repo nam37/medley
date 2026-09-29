@@ -77,6 +77,11 @@ function section(ops: Op[], before: number): string {
   return heading;
 }
 
+/** Where a line of a page sits: the landmark and heading above it, as a hunk label names them. */
+export function whereIs(lines: string[], index: number): string {
+  return section(lines.map((l): Op => [' ', l]), index);
+}
+
 /** Edit script from a to b, or null if they differ too much to be worth diffing. */
 function editScript(a: string[], b: string[]): Op[] | null {
   // Diff only the middle: pages usually change in one place.

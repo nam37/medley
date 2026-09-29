@@ -16,6 +16,12 @@ export interface PageInfo {
   cookies: { site: number; others: { site: string; count: number }[] } | null;
   storage: { usage: number; parts: { type: string; usage: number }[] } | null;
   about: About;
+  problems: {
+    heard: boolean; // whether the console is being listened to (see Page.watchConsole)
+    errors: string[]; // console errors, oldest first
+    warnings: number;
+    failed: string[]; // failed requests: "404 GET https://…"
+  };
 }
 
 /** What the page says about itself, read in the page by ABOUT. */
@@ -199,6 +205,14 @@ export function infoText(info: PageInfo): string {
   out.push(`  ${plural(a.words, 'word')}${a.words >= 200 ? `, about ${plural(Math.max(1, Math.round(a.words / 230)), 'minute')} to read` : ''}`);
   const fields = a.fields ? `${plural(a.fields, 'field')}${a.forms ? ` in ${plural(a.forms, 'form')}` : ''}` : '';
   out.push(`  ${[plural(a.links, 'link'), fields, plural(a.pictures, 'picture'), a.frames ? plural(a.frames, 'frame') : ''].filter(Boolean).join(' · ')}`);
+
+  const p = info.problems;
+  out.push('Problems');
+  if (!p.heard) out.push("  The console isn't being listened to on this page yet (medley console turns it on)");
+  else if (p.errors.length) {
+    out.push(`  ${plural(p.errors.length, 'console error')}${p.warnings ? ` and ${plural(p.warnings, 'warning')}` : ''}: ${some(p.errors.map((e) => (e.length > 100 ? e.slice(0, 99) + '…' : e)), 3)}`);
+  } else out.push(`  No console errors${p.warnings ? `, ${plural(p.warnings, 'warning')}` : ''}`);
+  out.push(p.failed.length ? `  ${plural(p.failed.length, 'failed request')}: ${some(p.failed.map((f) => (f.length > 100 ? f.slice(0, 99) + '…' : f)), 3)}` : '  No failed requests');
 
   out.push('Loading');
   // HTTP/2 and 3 send no status text.

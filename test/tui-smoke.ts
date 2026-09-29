@@ -74,7 +74,27 @@ try {
   // An agent acts in the same session; the UI follows along.
   await send(SESSION, { cmd: 'snapshot', client: 'mcp-smoke' });
   await send(SESSION, { cmd: 'click', args: { ref: 7 }, client: 'mcp-smoke' });
-  show('an agent clicked "Say hello"', await until('the agent', (f) => f.includes('Hello said 1') && f.includes('agent:')));
+  show('an agent clicked "Say hello"', await until('the agent', (f) => f.includes('Hello said 1') && f.includes('agent:') && f.includes(' agent ')));
+  console.log('\nthe agent\'s cursor tag showed on what it clicked');
+
+  // You and the agent talk: > sends a note, which the agent gets with its next step; it asks, and you answer.
+  await keys('>');
+  await mockInput.typeText('Use the blue one');
+  mockInput.pressEnter();
+  await until('the note to go', (f) => f.includes('sent; the agent gets it'));
+  const next = await send(SESSION, { cmd: 'snapshot', args: { diff: true }, client: 'mcp-smoke' });
+  if (!next.includes('says: "Use the blue one"')) throw new Error(`the agent didn't get the note: ${next.split('\n')[0]}`);
+  console.log(`\nthe agent's next step began with: ${next.split('\n')[0]}`);
+  show('the agent read the note', await until('the note read', (f) => f.includes('the agent got your note')));
+  const asked = send(SESSION, { cmd: 'ask-user', args: { question: 'Which size?', choices: ['S', 'M', 'L'] }, client: 'mcp-smoke' });
+  show('the agent asks', await until('the question', (f) => f.includes('the agent asks: Which size?') && f.includes('answer the agent')));
+  await mockInput.typeText('2');
+  mockInput.pressEnter();
+  const answer = await asked;
+  if (!answer.includes('"M"')) throw new Error(`the agent didn't get the answer: ${answer}`);
+  console.log(`\n2, Enter answered; the agent heard: ${answer}`);
+  await send(SESSION, { cmd: 'tell-user', args: { text: 'Adding the medium one' }, client: 'mcp-smoke' });
+  show('the agent tells you', await until('the message', (f) => f.includes('agent: Adding the medium one')));
 
   await keys('r');
   show('r reloads the page', await until('the reload', (f) => f.includes('Hello said 0') && f.includes('reloaded')));

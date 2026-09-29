@@ -17,6 +17,7 @@ import {
   type PasteEvent,
 } from '@opentui/core';
 import { saveScreenshot, STALE_HINT, type Reply, type SessionEvent } from '../client.ts';
+import type { TalkEvent } from '../talk.ts';
 import { resolve } from 'node:path';
 import { addBookmark, readBookmarks, removeBookmark } from '../bookmarks.ts';
 import { looksLikeAddress, parseCommand, searchUrl, splitFlags, splitWords, toUrl } from '../commands.ts';
@@ -48,12 +49,20 @@ type PickItem =
   | { kind: 'bookmark'; n: number; title: string; url: string }
   | { kind: 'history' | 'tab'; n: number; title: string; url: string; current: boolean };
 
-type PromptKind ='url' | 'field' | 'secret' | 'select' | 'file' | 'command' | 'find' | 'answer';
+type PromptKind = 'url' | 'field' | 'secret' | 'select' | 'file' | 'command' | 'find' | 'answer' | 'tell' | 'reply';
 interface Prompt {
   kind: PromptKind;
   label: string;
   ref?: number;
+  about?: string; // tell: the ref the note points at
+  question?: number; // reply: the question's id
 }
+
+const FOLLOW_AFTER_MS = 5000; // follow the agent's cursor once you haven't pressed a key for this long
+const AGENT_CURSOR_MS = 4000; // how long the agent's cursor stays after its action
+
+/** A question's choices, numbered for answering with a number: "1 S · 2 M · 3 L". */
+const choiceList = (choices: string[]) => choices.map((c, i) => `${i + 1} ${c}`).join(' · ');
 
 // Shown in the status line while a prompt is open, since its keys differ from browsing.
 const PROMPT_HINTS: Record<PromptKind, string> = {
@@ -65,10 +74,12 @@ const PROMPT_HINTS: Record<PromptKind, string> = {
   command: 'e.g. press Escape, wait 2, scroll bottom · Enter runs it · Esc cancels',
   find: 'Enter finds · Esc cancels',
   answer: 'Enter answers · Esc dismisses the dialog',
+  tell: 'the agent gets this with its next step · Enter sends · Esc cancels',
+  reply: 'Enter answers · Esc answers later (> brings it back)',
 };
 
-type Tone = 'info' | 'ok' | 'warn' | 'error';
-const TONE = { info: THEME.text, ok: THEME.ok, warn: THEME.warn, error: THEME.error };
+type Tone = 'info' | 'ok' | 'warn' | 'error' | 'agent';
+const TONE = { info: THEME.text, ok: THEME.ok, warn: THEME.warn, error: THEME.error, agent: THEME.agent };
 
 const HINTS = 'Tab select · Enter open · l refs · o address · ← back · / find · v grid · ? keys · q quit';
 const BADGE = ' medley ';
@@ -96,6 +107,7 @@ const HELP = [
   'T, or click tab 2/3 the open tabs: a number, then Enter switches (d closes)',
   'v                  grid: none → partial (main columns) → advanced (nested too)',
   'm                  reader mode: articles show just their main text (m again: all of it)',
+  '>                  tell the agent something (about the selected ref), or answer its question',
   '=, or click the address  page info: connection, cookies and site data, about the page',
   '\\                  the page’s source, as the server sent it (\\ again: the page)',
   'i                  the page’s pictures one at a time, full size: ← → step, Esc closes',
@@ -124,6 +136,12 @@ export class App {
   private infoSite = ''; // the site whose data c would clear
   private infoClearing = false; // asking whether to clear it
   private sourceShown = false; // the page's source is showing instead of the page (\)
+  private question: TalkEvent | null = null; // the agent's question, waiting for an answer
+  private talkLog: { who: 'you' | 'agent'; text: string }[] = []; // what you and the agent said
+  private talkBox: BoxRenderable; // the conversation, while you're typing to the agent
+  private talkText: TextRenderable;
+  private agentTimer: ReturnType<typeof setTimeout> | undefined; // fades the agent's cursor
+  private lastKeyAt = 0; // when you last pressed a key (to follow the agent only when you're not busy)
   private readerOn = false; // reader mode (m): articles show just their main text
   private readerFound = false; // and this page has main text to show
   private pages: BoxRenderable; // the bookmarks-and-history list (B)
@@ -238,6 +256,23 @@ export class App {
     this.infoContent = new TextRenderable(renderer, { content: '', fg: THEME.barFg, paddingLeft: 1, paddingRight: 1, wrapMode: 'word' });
     this.infoBox.add(this.infoContent);
     renderer.root.add(this.infoBox);
+    this.talkBox = new BoxRenderable(renderer, {
+      position: 'absolute',
+      bottom: 2,
+      left: 2,
+      right: 2,
+      height: 4,
+      zIndex: 9,
+      visible: false,
+      border: true,
+      borderStyle: 'rounded',
+      borderColor: THEME.agent,
+      title: ' you and the agent ',
+      backgroundColor: THEME.barBg,
+    });
+    this.talkText = new TextRenderable(renderer, { content: '', fg: THEME.barFg, paddingLeft: 1, paddingRight: 1, wrapMode: 'word' });
+    this.talkBox.add(this.talkText);
+    renderer.root.add(this.talkBox);
 
     this.pages = new BoxRenderable(renderer, {
       position: 'absolute',
@@ -422,7 +457,20 @@ export class App {
   }
 
   private onEvent(e: SessionEvent) {
-    if (e.client === this.backend.client || ['snapshot', 'status', 'screenshot', 'pictures', 'tabs'].includes(e.cmd)) return;
+    if (e.talk) return this.onTalk(e.talk);
+    if (e.client === this.backend.client || e.client.startsWith('tui-')) {
+      if (e.client !== this.backend.client) this.onOther(e);
+      return;
+    }
+    if (e.refs?.length) this.agentAt(e.refs, !!e.starting);
+    if (e.starting) return; // it's only begun; its result comes next
+    this.onOther(e);
+  }
+
+  /** Another client did something: say so, and look at the page again. */
+  private onOther(e: SessionEvent) {
+    const looking = ['snapshot', 'status', 'screenshot', 'pictures', 'tabs', 'info', 'source', 'find', 'console', 'network', 'extract'];
+    if (looking.includes(e.cmd) || e.starting) return;
     if (e.summary.startsWith('listed the ')) return; // history, downloads: nothing on the page changed
     const who = e.client.startsWith('mcp') ? 'agent' : e.client;
     this.activity = e.client === 'page' ? e.summary : `${who}: ${e.summary}`;
@@ -435,6 +483,103 @@ export class App {
     if (!e.ok) return;
     if (this.busy) this.refreshQueued = true;
     else void this.run('snapshot', {}, { quiet: true });
+  }
+
+  // ---- the agent's cursor, and talking with it -----------------------------------------
+
+  /**
+   * An agent is acting on these refs (starting: about to): mark them in its
+   * color with an "agent" tag, like a second cursor, and follow it there when
+   * you haven't pressed a key for a moment. The mark fades a few seconds after
+   * the action is done.
+   */
+  private agentAt(refs: number[], starting: boolean) {
+    clearTimeout(this.agentTimer);
+    this.page.setAgentCursor(refs);
+    if (starting && Date.now() - this.lastKeyAt > FOLLOW_AFTER_MS) this.page.showRef(refs[refs.length - 1]);
+    if (!starting) this.agentTimer = setTimeout(() => this.page.setAgentCursor([]), AGENT_CURSOR_MS);
+  }
+
+  /** What the agent and the person watching said (see talk.ts). */
+  private onTalk(t: TalkEvent) {
+    switch (t.kind) {
+      case 'question':
+        this.question = t;
+        this.logTalk('agent', `asks: ${t.text}${t.choices ? `  ${choiceList(t.choices)}` : ''}`);
+        // The agent is waiting on it: ask right away, unless something else is being typed.
+        if (!this.prompt) this.openReply();
+        break;
+      case 'answered':
+      case 'withdrawn':
+        if (this.question?.id === t.id) {
+          this.question = null;
+          if (this.prompt?.kind === 'reply') this.closePrompt();
+        }
+        if (t.kind === 'answered') this.logTalk('you', `answered: ${t.text}`);
+        break;
+      case 'message':
+        this.logTalk('agent', t.text);
+        this.say(`agent: ${t.text}`, 'agent');
+        break;
+      case 'note':
+        this.logTalk('you', `${t.text}${t.about ? `  (about ${t.about})` : ''}`);
+        break;
+      case 'read':
+        this.say('the agent got your note', 'ok');
+        break;
+    }
+    this.drawStatus();
+  }
+
+  private logTalk(who: 'you' | 'agent', text: string) {
+    this.talkLog.push({ who, text });
+    if (this.talkLog.length > 50) this.talkLog.shift();
+    if (this.talkBox.visible) this.showTalk();
+  }
+
+  /** >: tell the agent something (about the selected ref, if one is), or answer its question. */
+  private openTalk() {
+    if (this.question) return this.openReply();
+    const ref = this.page.selectedRef;
+    const about = ref ? (this.current?.labels.find(([n]) => n === ref.ref)?.[1] ?? `[${ref.ref}]`) : undefined;
+    this.openPrompt({ kind: 'tell', label: about ? `tell the agent about ${about}` : 'tell the agent', about });
+  }
+
+  private openReply() {
+    const q = this.question;
+    if (q) this.openPrompt({ kind: 'reply', label: 'answer the agent', question: q.id });
+  }
+
+  /** Say something to the agent, or answer it: never waits behind the browser, so it works while anything runs. */
+  private async talkTo(cmd: 'tell-agent' | 'answer', args: Record<string, unknown>) {
+    try {
+      const reply = await this.backend.request(cmd, args);
+      this.say(reply.text, 'ok');
+    } catch (e) {
+      this.say((e as Error).message.split('\n')[0], 'error');
+    }
+  }
+
+  /** The conversation so far, in a box over the page, while you're saying something to the agent. */
+  private showTalk() {
+    const recent = this.talkLog.slice(-8);
+    if (!recent.length) {
+      this.talkBox.visible = false;
+      return;
+    }
+    const you = fg(THEME.accentBg);
+    const agent = fg(THEME.agent);
+    const plain = fg(THEME.barFg);
+    this.talkText.content = new StyledText(
+      recent.flatMap((m, i) => [
+        bold((m.who === 'you' ? you : agent)(m.who === 'you' ? 'you: ' : 'agent: ')),
+        plain(m.text + (i < recent.length - 1 ? '\n' : '')),
+      ]),
+    );
+    const inner = Math.max(10, this.renderer.width - 8);
+    const rows = recent.reduce((n, m) => n + Math.max(1, Math.ceil((m.text.length + 7) / inner)), 0);
+    this.talkBox.height = Math.min(rows + 2, Math.max(4, this.renderer.height - 6));
+    this.talkBox.visible = true;
   }
 
   // ---- acting on refs ---------------------------------------------------------
@@ -478,11 +623,13 @@ export class App {
     // A password prompt keeps its text itself (see secretKey); the input only shows dots.
     if (prompt.kind === 'secret') this.input.blur();
     else this.input.focus();
+    if (prompt.kind === 'tell' || prompt.kind === 'reply') this.showTalk();
     this.draw();
   }
 
   private closePrompt() {
     this.prompt = null;
+    this.talkBox.visible = false;
     this.secret = '';
     this.input.blur();
     this.input.visible = false;
@@ -525,6 +672,18 @@ export class App {
       case 'answer':
         void this.run('dialog', { action: 'accept', text: value });
         break;
+      case 'tell':
+        if (value.trim()) void this.talkTo('tell-agent', { text: value, about: prompt.about });
+        break;
+      case 'reply': {
+        const q = this.question;
+        if (!q || q.id !== prompt.question || !value.trim()) break;
+        // A choice's number answers with the choice.
+        const n = Number(value.trim());
+        const text = q.choices && Number.isInteger(n) && n >= 1 && n <= q.choices.length ? q.choices[n - 1] : value;
+        void this.talkTo('answer', { id: q.id, text });
+        break;
+      }
       case 'find':
         this.find(value);
         break;
@@ -560,6 +719,7 @@ export class App {
   // ---- keys -----------------------------------------------------------------------
 
   private onKey = (key: KeyEvent) => {
+    this.lastKeyAt = Date.now();
     if (key.ctrl && key.name === 'c') return this.quit();
     if (this.prompt?.kind === 'secret') {
       key.preventDefault();
@@ -712,6 +872,7 @@ export class App {
       return;
     }
     if (ch === '=') return void this.openInfo();
+    if (ch === '>') return this.openTalk();
     if (ch === '\\') return void this.toggleSource();
     if (ch === '[' || ch === ']') {
       const { current, count } = this.tabs;
@@ -1332,8 +1493,11 @@ export class App {
       confirm: ' Quit medley? y to quit, any other key to stay',
       session: ' Close the background browser session? y close it · n keep it running · any other key to stay',
     };
+    const asks = this.question;
+    const asked = asks ? ` the agent asks: ${asks.text}${asks.choices ? `  ${choiceList(asks.choices)}` : ''}` : '';
     if (this.quitting !== 'no') left = [{ text: question[this.quitting], fg: THEME.warn }];
     else if (this.prompt && this.promptError) left = [{ text: ` ${this.promptError}`, fg: THEME.error }];
+    else if (this.prompt?.kind === 'reply' && asks) left = [{ text: `${asked} · ${PROMPT_HINTS.reply}`, fg: THEME.agent }];
     else if (this.prompt) left = [{ text: ` ${PROMPT_HINTS[this.prompt.kind]}`, fg: THEME.dim }];
     else if (this.busy && this.doing) {
       const s = Math.floor((Date.now() - this.busySince) / 1000);
@@ -1341,6 +1505,7 @@ export class App {
     }
     else if (this.digits) left = [{ text: ` ref ${this.digits}▏ Enter to open · Esc to cancel`, fg: THEME.link }];
     else if (this.dialog) left = [{ text: ` ⚠ the page asks (${this.dialog.type}): "${this.dialog.message}"`, fg: THEME.warn }];
+    else if (asks) left = [{ text: `${asked} · > answers`, fg: THEME.agent }];
     else left = [{ text: ` ${this.message.text}`, fg: TONE[this.message.tone] }];
     const right: Segment[] = [];
     if (this.activity) right.push({ text: this.activity, fg: THEME.agent });

@@ -21,7 +21,8 @@ session commands:
   snapshot --section <name>       one region or heading's part of the page
   snapshot --reader               reader view: just the page's main text (an article without menus,
                                   sidebars and footers); goto <url> --reader opens a page that way
-  click <ref>
+  click <ref>                     a ref's number, or its name: click Add to cart, type "Email" ada@x.com
+                                  (click button Save says which kind; a name that fits several fails)
   type <ref> <text> [--submit]    replace a field's text (--submit: then press Enter)
   select <ref> <option>           choose an option of a <select> by its text or value
   press <key>                     Enter, Escape, Tab, ArrowDown, PageDown, a, Control+a, ...
@@ -43,10 +44,18 @@ session commands:
   wait --gone <text> [seconds]    wait until it doesn't (a "Loading…" going away)
   fill <ref>=<value>... [--submit]  fill fields at once: text, a select's option, a checkbox on/off
   screenshot [file] [--full]      save a PNG of the window (--full: the whole page)
+  find <text>                     the lines with the text, with a line around each and where they are
+  extract                         the page's tables and runs of repeated items (results, cards)
+  extract table <n> [--csv]       one table as JSON rows (or CSV); extract items <n> for a run of items
+  console [--all]                 the errors and warnings the page logged (--all: every message)
+  network [--all]                 the page's failed requests (--all: every request)
   info [--json]                   page info: the connection and its certificate, cookies and site
                                   data, what the page says about itself, what loading it took
   clear-site-data                 delete the page's site's cookies and stored data (signs you out there)
   source [--dom]                  the page's HTML as the server sent it (--dom: as it is now)
+  ask <question> [choice…]        ask the person watching in the terminal UI, and wait (up to 2
+                                  minutes) for the answer: medley ask "Which size?" S M L
+  tell <message>                  tell the person watching what you're doing
   dialog accept [text]            answer a confirm() or prompt() the page opened
   dialog dismiss
   status, stop
@@ -66,6 +75,7 @@ options:
   --headed           start the session with a visible browser window
   --links            list link targets after a full snapshot
   --outline          with goto or search: the new page's outline instead of all of it
+  --max <chars>      a result longer than this comes back as the page's outline instead
   --color, --no-color  force ANSI color on or off (default: on for terminals)
   --width <px>       viewport width when starting a browser (default 1280)
   --browser <path>   Chrome/Edge executable (or MEDLEY_BROWSER)
@@ -97,6 +107,9 @@ const opts = {
   newTab: false,
   dom: false,
   reader: false,
+  all: false,
+  csv: false,
+  max: undefined as number | undefined,
   json: false,
   color:!!process.stdout.isTTY && !process.env.NO_COLOR,
   width: undefined as number | undefined,
@@ -123,6 +136,9 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--new-tab') opts.newTab = true;
   else if (a === '--dom') opts.dom = true;
   else if (a === '--reader') opts.reader = true;
+  else if (a === '--all') opts.all = true;
+  else if (a === '--csv') opts.csv = true;
+  else if (a === '--max') opts.max = Number(value()) || fail('--max must be a number of characters');
   else if (a === '--json') opts.json = true;
   else if (a === '--color') opts.color = true;
   else if (a === '--no-color') opts.color = false;
@@ -164,6 +180,7 @@ async function oneShot(url: string) {
 async function run(): Promise<string> {
   if (command === 'snapshot' && rest[0]) return oneShot(rest[0]);
   const { cmd, args, start: starts } = parseCommand(words, opts);
+  if (opts.max) args.max = opts.max;
   const reply = send(opts.session, { cmd, args, client }, starts ? start : undefined);
   if (cmd === 'screenshot') return saveScreenshot(await reply, args.path as string | undefined);
   if (cmd !== 'stop') return reply;
@@ -183,7 +200,7 @@ if (!command) {
   try {
     const text = await run();
     // Page info and a page's source aren't page text: printed as they are, for reading, saving or piping.
-    const plain = opts.json || command === 'source' || command === 'info';
+    const plain = opts.json || ['source', 'info', 'console', 'network', 'extract'].includes(command);
     process.stdout.write((opts.color && !plain ? colorize(text) : text) + '\n');
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'EPIPE') process.exit(0);

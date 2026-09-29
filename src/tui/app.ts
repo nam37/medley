@@ -38,7 +38,9 @@ export interface Backend {
 }
 
 /** A line of the bookmarks-and-history list: a bookmark, or a page of this tab's history. */
-type PickItem = { kind: 'bookmark'; n: number; title: string; url: string } | { kind: 'history'; n: number; title: string; url: string; current: boolean };
+type PickItem =
+  | { kind: 'bookmark'; n: number; title: string; url: string }
+  | { kind: 'history' | 'tab'; n: number; title: string; url: string; current: boolean };
 
 type PromptKind ='url' | 'field' | 'secret' | 'select' | 'file' | 'command' | 'find' | 'answer';
 interface Prompt {
@@ -84,6 +86,8 @@ const HELP = [
   '/, then n N        find text, then the next or previous match',
   ':                  run a command: press Escape, wait 2, select 6 High, …',
   'l, or click N refs  the page’s refs in a list: type to filter, Enter opens',
+  't                  open the selected link in a new tab',
+  'T, or click tab 2/3 the open tabs: a number, then Enter switches (d closes)',
   'v                  grid: none → partial (main columns) → advanced (nested too)',
   'a                  bookmark this page',
   "B                  bookmarks and this tab's history: a number, then Enter opens",
@@ -110,7 +114,7 @@ export class App {
   private refsBox: BoxRenderable; // the refs pull-down (l, or a click on "N refs")
   private refList: RefList;
   private splash: Splash; // the logo, while there's no page yet
-  private picker: { items: PickItem[]; digits: string } | null = null;
+  private picker: { items: PickItem[]; digits: string; tabs?: boolean } | null = null; // B's list, or T's (tabs)
 
   private current: View['page'] = null;
   private dialog: View['dialog'] = null;
@@ -146,7 +150,11 @@ export class App {
       bg: THEME.barBg,
       // "N refs" is on the right: a click there pulls down the list of refs.
       onClick: (x, right) => {
-        if (right >= 0 && x >= right) this.openRefs();
+        if (right < 0 || x < right) return;
+        // "tab 2/3 · " comes first when there are tabs; the rest is "N refs".
+        const tabs = this.tabs.count > 1 ? `tab ${this.tabs.current}/${this.tabs.count}`.length : 0;
+        if (x < right + tabs) void this.openTabs();
+        else this.openRefs();
       },
     });
     this.page = new PageView(renderer, {
@@ -627,6 +635,12 @@ export class App {
       case 'l':
         if (key.ctrl) return this.openPrompt({ kind: 'url', label: 'open' }, this.current?.url ?? '');
         return this.openRefs();
+      case 't': {
+        if (key.shift) return void this.openTabs(); // T: the tabs
+        const ref = this.page.selectedRef;
+        if (ref?.kind !== 'link') return this.say('press Tab to pick a link, then t opens it in a new tab', 'info');
+        return void this.run('click', { ref: ref.ref, newTab: true });
+      }
       case 'q':
         if (key.shift) return this.quit(); // Q quits without asking, as in Lynx
         this.quitting = 'confirm';
@@ -755,7 +769,20 @@ export class App {
     const bookmarks = items.filter((i) => i.kind === 'bookmark');
     const history = items.filter((i) => i.kind === 'history').reverse();
     this.picker = { items: [...bookmarks, ...history], digits: '' };
+    this.pages.title = ' bookmarks and history · Esc to close ';
     this.drawPicker();
+  }
+
+  /** T (or a click on "tab 2/3"): the open tabs, numbered to switch to (Enter) or close (d). */
+  private async openTabs() {
+    try {
+      const tabs = JSON.parse((await this.backend.request('tabs', { json: true })).text) as { title: string; url: string; current: boolean }[];
+      this.picker = { items: tabs.map((t, i) => ({ kind: 'tab', n: i + 1, ...t })), digits: '', tabs: true };
+      this.pages.title = ' tabs · Esc to close ';
+      this.drawPicker();
+    } catch (e) {
+      this.say((e as Error).message.split('\n')[0], 'error');
+    }
   }
 
   private drawPicker() {
@@ -766,20 +793,26 @@ export class App {
     }
     const width = Math.max(20, this.renderer.width - 8);
     const line = (i: number, it: PickItem) => {
-      const mark = it.kind === 'history' && it.current ? '• ' : '  ';
+      const mark = it.kind !== 'bookmark' && it.current ? '• ' : '  ';
       const url = it.url.replace(/^https?:\/\//, '');
       return fitText(`${String(i + 1).padStart(3)}  ${mark}${it.title || '(untitled)'}  ${url}`, width);
     };
     const nb = p.items.filter((i) => i.kind === 'bookmark').length;
     const rows: string[] = [];
-    rows.push(nb ? 'bookmarks' : 'no bookmarks yet: a bookmarks the page you are on');
-    p.items.forEach((it, i) => {
-      if (i === nb) rows.push("this tab's history, newest first (• is this page)");
-      rows.push(line(i, it));
-    });
+    if (p.tabs) {
+      rows.push('open tabs (• is this one)');
+      p.items.forEach((it, i) => rows.push(line(i, it)));
+    } else {
+      rows.push(nb ? 'bookmarks' : 'no bookmarks yet: a bookmarks the page you are on');
+      p.items.forEach((it, i) => {
+        if (i === nb) rows.push("this tab's history, newest first (• is this page)");
+        rows.push(line(i, it));
+      });
+    }
     const max = Math.max(3, this.renderer.height - 8);
     const shown = rows.length > max ? [...rows.slice(0, max - 1), `  … ${rows.length - max + 1} more`] : rows;
-    shown.push('', p.digits ? `open ${p.digits}▏ Enter opens · d deletes a bookmark · Esc closes` : 'a number, then Enter opens it (then d deletes a bookmark) · Esc closes');
+    const del = p.tabs ? 'closes the tab' : 'deletes a bookmark';
+    shown.push('', p.digits ? `open ${p.digits}▏ Enter opens · d ${del} · Esc closes` : `a number, then Enter opens it (then d ${del}) · Esc closes`);
     this.pagesText.content = shown.join('\n');
     this.pages.height = shown.length + 2;
     this.pages.visible = true;
@@ -795,6 +828,10 @@ export class App {
       if (!item) {
         p.digits = '';
         this.say(n ? `there is no line ${n} in the list` : 'type the number of a line first', 'error');
+      } else if (key.name === 'd' && item.kind === 'tab') {
+        this.closePicker();
+        void this.run('close-tab', { n: item.n });
+        return;
       } else if (key.name === 'd') {
         if (item.kind !== 'bookmark') this.say('only bookmarks can be deleted', 'info');
         else {
@@ -806,7 +843,9 @@ export class App {
       } else {
         this.closePicker();
         if (item.kind === 'bookmark') void this.run('goto', { url: item.url }, { start: true });
-        else if (!item.current) void this.run('history', { n: item.n });
+        else if (item.kind === 'tab') {
+          if (!item.current) void this.run('tab', { n: item.n });
+        } else if (!item.current) void this.run('history', { n: item.n });
         return;
       }
     } else return this.closePicker();
@@ -954,7 +993,11 @@ export class App {
         if (args.search) return `searching for "${args.search}"`;
         return `opening ${String(args.url).replace(/^https?:\/\//, '')}`;
       case 'click':
-        return `clicking ${label}`;
+        return args.newTab ? `opening ${label} in a new tab` : `clicking ${label}`;
+      case 'drag':
+        return 'dragging';
+      case 'fill':
+        return 'filling in the fields';
       case 'type':
         return `typing into ${label}`;
       case 'select':

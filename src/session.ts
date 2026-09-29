@@ -342,11 +342,44 @@ export class Session {
           await this.page.click(at.x, at.y);
         } else if (kind === 'textbox' || kind === 'password' || kind === 'combobox') {
           await this.typeInto(ref, value);
+        } else if (kind === 'slider') {
+          const r = await this.callRef<{ error?: string }>('setRange', ref, value);
+          if (r.error) throw new Error(r.error);
         } else {
           throw new Error(`${label} isn't a field to fill; click it instead`);
         }
       }
       if (submit) await this.page.press(parseKey('Enter'));
+    });
+  }
+
+  /**
+   * Drag a ref onto another ref, or onto the visible text of a drop zone
+   * (those are rarely controls). The source is scrolled into view; the
+   * target is found where it is if it's on screen too, else brought just
+   * into view and the source found again.
+   */
+  async drag(client: string, from: number, to: number | string): Promise<string> {
+    await this.checkRefs(client);
+    const onto = typeof to === 'number' ? this.label(client, to) : `"${to}"`;
+    return this.act(client, `dragged ${this.label(client, from)} onto ${onto}`, async () => {
+      const target = async (scroll: boolean) => {
+        if (typeof to === 'number') return this.locate(to, scroll);
+        const at = await this.page.evaluate<{ x: number; y: number; error?: string }>(`(${ACTIONS}).textPoint(${JSON.stringify(to)}, ${scroll})`);
+        if (at.error) throw new Error(at.error);
+        return at;
+      };
+      let a = await this.locate(from);
+      let b: { x: number; y: number };
+      try {
+        b = await target(false);
+      } catch {
+        b = await target(true);
+        a = await this.locate(from, false).catch(() => {
+          throw new Error(`${this.label(client, from)} and ${onto} don't fit on screen together; scroll so both show, then drag`);
+        });
+      }
+      await this.page.drag(a, b);
     });
   }
 
@@ -558,14 +591,40 @@ export class Session {
   // ---- tabs -----------------------------------------------------------------
 
   async tabList(): Promise<string> {
+    return (await this.tabEntries())
+      .map((t, i) => `${i + 1}. ${t.title || '(untitled)'} · ${t.url}${t.current ? '  ← current' : ''}`)
+      .join('\n');
+  }
+
+  /** The open tabs, in order, with which one is current. */
+  async tabEntries(): Promise<{ title: string; url: string; current: boolean }[]> {
     await this.ensureTab();
     const info = await this.browser.describe(this.tabs.map((t) => t.targetId));
-    return this.tabs
-      .map((t, i) => {
-        const d = info.get(t.targetId);
-        return `${i + 1}. ${d?.title || '(untitled)'} · ${d?.url ?? ''}${t === this.page ? '  ← current' : ''}`;
-      })
-      .join('\n');
+    return this.tabs.map((t) => {
+      const d = info.get(t.targetId);
+      return { title: d?.title ?? '', url: d?.url ?? '', current: t === this.page };
+    });
+  }
+
+  /** Open a new tab (on `url`, or blank) and carry on in it; the tab it came from is where closing it returns. */
+  async newTab(client: string, url?: string): Promise<string> {
+    if (this.dialog) throw new Error(this.dialogText());
+    await this.ensureTab();
+    const page = await this.browser.newPage();
+    this.watch(page);
+    this.tabs.push(page);
+    this.openers.set(page, this.page);
+    this.page = page;
+    this.notes.push(`opened tab ${this.tabs.length}; now in that tab`);
+    return url ? this.goto(client, url) : this.report(client, 'opened a new tab');
+  }
+
+  /** Open a link's address in a new tab (the page it's on stays as it is). */
+  async openInNewTab(client: string, ref: number): Promise<string> {
+    await this.checkRefs(client);
+    const href = this.baselines.get(client)!.hrefs.find(([n]) => n === ref)?.[1];
+    if (!href) throw new Error(`${this.label(client, ref)} isn't a link with an address; click it instead`);
+    return this.newTab(client, href);
   }
 
   async switchTab(client: string, n: number): Promise<string> {
@@ -907,12 +966,12 @@ export class Session {
    * In a frame: scroll the frame into view, find the point inside it, and add
    * where each enclosing frame's content starts.
    */
-  private async locate(ref: number): Promise<{ x: number; y: number }> {
+  private async locate(ref: number, scroll = true): Promise<{ x: number; y: number }> {
     const { frame } = this.target(ref);
-    await this.revealFrame(frame);
-    let at = await this.callRef<{ x: number; y: number; error?: string }>('locate', ref);
+    if (scroll) await this.revealFrame(frame);
+    let at = await this.callRef<{ x: number; y: number; error?: string }>('locate', ref, scroll);
     if (at.error) throw new Error(at.error);
-    if (frame) {
+    if (frame && scroll) {
       // The browser places a frame's content where it was when it last drew;
       // after scrolling, let it draw before measuring (or a click lands where
       // the frame used to be).

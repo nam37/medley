@@ -148,6 +148,8 @@ try {
   mockInput.pressKey(':');
   await mockInput.typeText('scroll bottom');
   mockInput.pressEnter();
+  await until('the lazy items to load', (f) => /scrolled bottom · \+\d+ -0 lines/.test(f));
+  await keys('END'); // they're below the fold
   show(':scroll bottom loads lazy items', await until('lazy items', (f) => f.includes('Lazy item 3')));
 
   mockInput.pressKey('/');
@@ -157,7 +159,9 @@ try {
 
   mockInput.pressEscape(); // clear the find
   await Bun.sleep(100); // a lone Esc waits briefly in case it starts an escape sequence
-  const frame = await until('the find to clear', (f) => !f.includes('match 1 of 3'));
+  await until('the find to clear', (f) => !f.includes('match 1 of 3'));
+  await keys('HOME'); // back up to the top of the page
+  const frame = await until('the top of the page', (f) => f.includes('[1]Fixture page'));
   const row = frame.split('\n').findIndex((l) => l.includes('[1]Fixture page'));
   await mockMouse.click(frame.split('\n')[row].indexOf('[1]') + 4, row);
   show('clicked [1] with the mouse', await until('the fixture page', (f) => f.includes('Medley fixture')));
@@ -208,6 +212,30 @@ try {
   await keys('1');
   mockInput.pressEnter();
   show('1, Enter: the bookmark opens', await until('the bookmarked page', (f) => f.includes('# Todos') && !f.includes('bookmarks and history')));
+
+  // T lists the tabs; a number and Enter switches. A click on "tab 1/2" in the top bar does too.
+  await keys('T');
+  show('T lists the tabs', await until('the tabs', (f) => f.includes('open tabs') && /2 +Medley fixture/.test(f)));
+  await keys('2');
+  mockInput.pressEnter();
+  await until('tab 2', (f) => f.includes('tab 2/2') && f.includes('Medley fixture'));
+  const topBar = setup.captureCharFrame().split('\n')[0];
+  await mockMouse.click(topBar.indexOf('tab 2/2') + 2, 0);
+  await until('the tabs from a click', (f) => f.includes('open tabs'));
+  await keys('1');
+  mockInput.pressEnter();
+  await until('tab 1', (f) => f.includes('tab 1/2') && f.includes('# Todos'));
+  console.log('\n2, Enter switched to tab 2; a click on "tab 2/2" listed the tabs; 1, Enter came back');
+
+  // t opens the selected link in a new tab; T, then its number and d, closes it.
+  await keys('\t');
+  await keys('t');
+  show('t opens the selected link in a new tab', await until('the new tab', (f) => f.includes('tab 3/3') && f.includes('Medley fixture')));
+  await keys('T');
+  await until('the tabs', (f) => f.includes('open tabs') && /3 +• Medley fixture/.test(f));
+  await keys('3', 'd');
+  await until('the tab to close', (f) => f.includes('tab 1/2') && f.includes('# Todos'));
+  console.log('\nT, 3, d closed it, back in the tab it came from');
 
   await keys('?');
   show('? shows the keys', await until('the help', (f) => f.includes('any key to close')));

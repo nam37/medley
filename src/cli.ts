@@ -24,6 +24,7 @@ session commands:
   select <ref> <option>           choose an option of a <select> by its text or value
   press <key>                     Enter, Escape, Tab, ArrowDown, PageDown, a, Control+a, ...
   hover <ref>                     move the mouse over an element (menus that open on hover)
+  drag <ref> <ref|text>           drag an element onto another, or onto a drop zone's text
   scroll [down|up|top|bottom|<ref>]
   upload <ref> <file>...          choose files for a file field, as if picked in its dialog
   reload [--hard]                 reload the page (--hard: bypass the cache)
@@ -31,6 +32,8 @@ session commands:
   history [n]                     list this tab's pages, or go to the n-th
   downloads                       list what this session downloaded, and where
   tabs                            list open tabs (links can open new ones)
+  newtab [url]                    open a new tab, blank or on a page, and switch to it
+  click <ref> --new-tab           open a link in a new tab, keeping this page
   tab <number>                    switch to a tab
   close-tab [number]              close a tab (the current one by default)
   wait [seconds]                  let the page work, then show what changed (default 2)
@@ -85,6 +88,7 @@ const opts = {
   for: undefined as string | undefined,
   gone: undefined as string | undefined,
   full: false,
+  newTab: false,
   json: false,
   color:!!process.stdout.isTTY && !process.env.NO_COLOR,
   width: undefined as number | undefined,
@@ -108,6 +112,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--for') opts.for = value();
   else if (a === '--gone') opts.gone = value();
   else if (a === '--full') opts.full = true;
+  else if (a === '--new-tab') opts.newTab = true;
   else if (a === '--json') opts.json = true;
   else if (a === '--color') opts.color = true;
   else if (a === '--no-color') opts.color = false;

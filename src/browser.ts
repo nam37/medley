@@ -530,6 +530,40 @@ export class Page {
     await this.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
   }
 
+  /**
+   * Drag from one point to another with the mouse. If the page starts an
+   * HTML drag (draggable="true"), the browser hands over the drag's data and
+   * the drop is delivered at the target; otherwise the mouse just moves there
+   * with its button down (sliders, canvases, pointer-driven lists).
+   */
+  async drag(from: { x: number; y: number }, to: { x: number; y: number }) {
+    let data: unknown = null;
+    const off = this.on((m, p) => {
+      if (m === 'Input.dragIntercepted') data = p.data;
+    });
+    await this.send('Input.setInterceptDrags', { enabled: true });
+    try {
+      const mouse = (type: string, x: number, y: number, buttons: number) =>
+        this.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons, clickCount: 1 });
+      await mouse('mouseMoved', from.x, from.y, 0);
+      await mouse('mousePressed', from.x, from.y, 1);
+      const steps = 12;
+      for (let i = 1; i <= steps && !data; i++) {
+        await mouse('mouseMoved', from.x + ((to.x - from.x) * i) / steps, from.y + ((to.y - from.y) * i) / steps, 1);
+        await sleep(16);
+      }
+      if (data) {
+        for (const type of ['dragEnter', 'dragOver', 'drop']) {
+          await this.send('Input.dispatchDragEvent', { type, x: to.x, y: to.y, data });
+        }
+      }
+      await mouse('mouseReleased', to.x, to.y, 0);
+    } finally {
+      off();
+      await this.send('Input.setInterceptDrags', { enabled: false }).catch(() => {});
+    }
+  }
+
   hover(x: number, y: number) {
     return this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
   }

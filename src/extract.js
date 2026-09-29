@@ -135,6 +135,9 @@
       }
     }
     if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return 'textbox';
+    // Something made to be dragged (a card on a board, an item to reorder), by
+    // its own attribute: links and images are draggable by default, and they're refs already.
+    if (!ctx.inRef && el.getAttribute('draggable') === 'true' && clean(el.innerText)) return 'draggable';
     // Script-driven click targets: the outermost element with a pointer cursor
     // that doesn't just wrap a real control.
     if (

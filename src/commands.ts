@@ -19,9 +19,10 @@ export interface CommandFlags {
   for?: string; // wait --for <text>
   gone?: string; // wait --gone <text>
   full?: boolean; // screenshot --full
+  newTab?: boolean; // click --new-tab
 }
 
-const FLAGS = new Set(['--links', '--diff', '--submit', '--hard', '--outline', '--full']);
+const FLAGS = new Set(['--links', '--diff', '--submit', '--hard', '--outline', '--full', '--new-tab']);
 
 export class UsageError extends Error {}
 
@@ -58,7 +59,8 @@ export function splitFlags(words: string[]): { words: string[]; flags: CommandFl
   const flags: CommandFlags = {};
   const rest = words.filter((w) => {
     if (FLAGS.has(w)) {
-      flags[w.slice(2) as keyof CommandFlags] = true;
+      const key = w.slice(2).replace(/-(\w)/g, (_, c: string) => c.toUpperCase()); // --new-tab → newTab
+      (flags as Record<string, unknown>)[key] = true;
       return false;
     }
     return true;
@@ -82,8 +84,8 @@ export function parseCommand([command, ...rest]: string[], flags: CommandFlags =
     case 'snapshot':
       return { cmd: 'snapshot', args: { diff: flags.diff, links: flags.links, outline: flags.outline, section: flags.section } };
     case 'click':
-      need(1, 'click <ref>');
-      return { cmd: 'click', args: { ref: rest[0] } };
+      need(1, 'click <ref> [--new-tab]');
+      return { cmd: 'click', args: { ref: rest[0], newTab: flags.newTab } };
     case 'type':
       need(1, 'type <ref> <text> [--submit]');
       return { cmd: 'type', args: { ref: rest[0], text: rest.slice(1).join(' '), submit: flags.submit } };
@@ -98,6 +100,8 @@ export function parseCommand([command, ...rest]: string[], flags: CommandFlags =
       return { cmd: 'hover', args: { ref: rest[0] } };
     case 'tabs':
       return { cmd: 'tabs', args: {} };
+    case 'newtab':
+      return { cmd: 'newtab', args: { url: rest[0] ? toUrl(rest[0]) : undefined }, start: true };
     case 'tab':
       need(1, 'tab <number>');
       return { cmd: 'tab', args: { n: rest[0] } };
@@ -130,6 +134,9 @@ export function parseCommand([command, ...rest]: string[], flags: CommandFlags =
     }
     case 'screenshot':
       return { cmd: 'screenshot', args: { full: flags.full, path: rest[0] } };
+    case 'drag':
+      need(2, 'drag <ref> <ref, or text on the drop zone>');
+      return { cmd: 'drag', args: { from: rest[0], to: rest.slice(1).join(' ') } };
     case 'dialog':
       if (rest[0] !== 'accept' && rest[0] !== 'dismiss') throw new UsageError('usage: dialog accept [text] | dialog dismiss');
       return { cmd: 'dialog', args: { action: rest[0], text: rest.length > 1 ? rest.slice(1).join(' ') : undefined } };

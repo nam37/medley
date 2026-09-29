@@ -15,10 +15,11 @@
   // Scroll the element into view and find a point where a click lands on it
   // (or on its label), in top-level viewport coordinates. If something else
   // covers it, such as a cookie banner or a modal, say what.
-  locate(ref) {
+  locate(ref, scroll = true) {
     const el = this.element(ref);
     if (!el) return this.missing(ref);
-    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    if (scroll) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    else if (!this.onScreen(el)) return { error: `ref ${ref} isn't on screen`, offScreen: true };
     const doc = el.ownerDocument;
     const rects = [...el.getClientRects()].filter((r) => r.width > 0 && r.height > 0);
     if (!rects.length) return { error: `ref ${ref} has no visible box` };
@@ -144,6 +145,50 @@
     const x = r.left + el.clientLeft + parseFloat(cs.paddingLeft);
     const y = r.top + el.clientTop + parseFloat(cs.paddingTop);
     return this.toTop(el.ownerDocument, x, y);
+  },
+
+  onScreen(el) {
+    const r = el.getBoundingClientRect();
+    const win = el.ownerDocument.defaultView;
+    return r.bottom > 0 && r.right > 0 && r.top < win.innerHeight && r.left < win.innerWidth;
+  },
+
+  // A point on the smallest visible element whose text contains `text` (a drop
+  // zone is rarely a control, so it's named by what it says). With `scroll`,
+  // bring it into view (only as far as needed) first.
+  textPoint(text, scroll) {
+    const want = String(text).trim().toLowerCase();
+    let best = null;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+    for (let el = walker.currentNode; el; el = walker.nextNode()) {
+      if (!el.checkVisibility || !el.checkVisibility()) continue;
+      const t = (el.innerText || '').trim().toLowerCase();
+      if (!t.includes(want)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) continue;
+      if (!best || r.width * r.height <= best.area) best = { el, area: r.width * r.height };
+    }
+    if (!best) return { error: `no visible text "${text}" on the page` };
+    if (scroll) best.el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+    else if (!this.onScreen(best.el)) return { error: `"${text}" isn't on screen`, offScreen: true };
+    const r = best.el.getBoundingClientRect();
+    return this.toTop(best.el.ownerDocument, r.left + r.width / 2, r.top + r.height / 2);
+  },
+
+  // Set a range input (a slider) to a value, as dragging its thumb would.
+  setRange(ref, value) {
+    const el = this.element(ref);
+    if (!el) return this.missing(ref);
+    if (el.localName !== 'input' || el.type !== 'range') {
+      return { error: `ref ${ref} is a custom slider; move it with press ArrowRight or ArrowLeft after clicking it` };
+    }
+    if (el.disabled) return { error: `ref ${ref} is disabled` };
+    // The native setter, so frameworks that track the value see the change.
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(el, String(value));
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return { value: el.value };
   },
 
   // Whether a checkbox or radio button (native or ARIA) is checked.

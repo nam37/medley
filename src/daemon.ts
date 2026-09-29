@@ -177,11 +177,17 @@ async function dispatch({ cmd, args = {} }: Command, client: string): Promise<st
     case 'snapshot':
       return session.snapshot(client, { diff: !!args.diff, links: !!args.links, outline: !!args.outline, section: args.section ? String(args.section) : '' });
     case 'click':
+      if (args.newTab) return session.openInNewTab(client, ref(args.ref));
       return session.click(client, ref(args.ref));
     case 'type':
       return session.type(client, ref(args.ref), String(args.text ?? ''), !!args.submit);
     case 'fill':
       return session.fill(client, fields(args.fields), !!args.submit);
+    case 'drag': {
+      const to = args.to;
+      if (to === undefined || to === '') throw new Error('drag needs a target: a ref, or text on the drop zone');
+      return session.drag(client, ref(args.from), /^\d+$/.test(String(to)) ? Number(to) : String(to));
+    }
     case 'select':
       return session.select(client, ref(args.ref), String(args.option ?? ''));
     case 'press':
@@ -191,7 +197,9 @@ async function dispatch({ cmd, args = {} }: Command, client: string): Promise<st
     case 'hover':
       return session.hover(client, ref(args.ref));
     case 'tabs':
-      return session.tabList();
+      return args.json ? JSON.stringify(await session.tabEntries()) : session.tabList();
+    case 'newtab':
+      return session.newTab(client, args.url ? String(args.url) : undefined);
     case 'tab':
       return session.switchTab(client, tab(args.n));
     case 'close-tab':

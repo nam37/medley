@@ -89,6 +89,8 @@ sweeps across the `medley` badge and the status line says what's happening.
 | Keys | |
 |---|---|
 | Tab, Shift+Tab | select the next or previous ref; the status line shows where a link goes |
+| t | open the selected link in a new tab |
+| T, or a click on "tab 2/3" | the open tabs: type a number, then Enter switches to it (or d closes it) |
 | l, or a click on "N refs" | pull down a list of the page's refs, with where each link goes: type to filter, ↑ ↓ to choose, Enter (or a click) opens |
 | Enter, or a mouse click | open the ref: links and buttons are clicked; text fields, selects and file fields ask for input |
 | 0-9, then Enter | open a ref by its number |
@@ -142,10 +144,11 @@ medley snapshot --outline           the page's regions and headings, with how ma
 medley snapshot --section <name>     one region or heading and what's under it
 medley click <ref>
 medley type <ref> <text> [--submit] replace a field's text, optionally pressing Enter
-medley fill <ref>=<value>... [--submit]  fill fields at once: text, a select's option, a checkbox on/off
+medley fill <ref>=<value>... [--submit]  fill fields at once: text, a select's option, a checkbox on/off, a slider's number
 medley select <ref> <option>        choose a <select> option by text or value
 medley press <key>                  Enter, Escape, Tab, ArrowDown, PageDown, a, Control+a, …
 medley hover <ref>                  move the mouse over an element (menus that open on hover)
+medley drag <ref> <ref|text>        drag an element onto another, or onto a drop zone's text
 medley scroll [down|up|top|bottom|<ref>]
 medley upload <ref> <file>...        choose files for a file field, as if picked in its dialog
 medley reload [--hard]              reload the page (--hard: bypass the cache)
@@ -153,6 +156,8 @@ medley back | forward
 medley history [n]                  list this tab's pages, or go to the n-th
 medley downloads                    list what this session downloaded, and where
 medley tabs                         list open tabs
+medley newtab [url]                 open a new tab, blank or on a page, and switch to it
+medley click <ref> --new-tab        open a link in a new tab, keeping this page
 medley tab <number>                 switch to a tab
 medley close-tab [number]           close a tab (the current one by default)
 medley wait [seconds]               let the page work, then show what changed
@@ -218,7 +223,7 @@ returns an image of the page for what text can't show.
 | Syntax | Meaning |
 |---|---|
 | `[7]text` | link (ref 7); state in parens, e.g. `(current)`, `(expanded)` |
-| `[8 kind "name" = "value" states]` | other controls: button, textbox, password, combobox, select, checkbox, radio, slider, tab, menuitem, option, file (a password's value shows as `********`; a file field's, as the chosen files' names) |
+| `[8 kind "name" = "value" states]` | other controls: button, textbox, password, combobox, select, checkbox, radio, slider, tab, menuitem, option, file, draggable (a password's value shows as `********`; a file field's, as the chosen files' names) |
 | `[9 clickable …]` | outermost pointer-cursor element that isn't a real control (script-driven click target) |
 | `── nav "Primary" ──` | landmark: header, nav, main, aside, footer, search, form, dialog; `header › nav` when nested |
 | `#`, `-`, `1.`, `\|` tables, fences, `>` | headings, lists, data tables, `<pre>`, blockquotes |
@@ -329,7 +334,6 @@ terminal pictures come from it.
 - A frame from another site inside a same-origin frame stays a placeholder
   (frames directly in the page, or inside other cross-site frames, are read).
   Advanced grid doesn't draw pictures inside frames from other sites.
-- There's no drag and drop.
 - Canvas and WebGL apps don't render as text; `screenshot` (MCP
   `browser_screenshot`, which returns the image) shows them.
 - Some sites block headless Chrome; `--headed` may help.
@@ -343,4 +347,3 @@ terminal pictures come from it.
 ## Next
 
 - Images in the terminal UI via the kitty or sixel graphics protocols.
-- Drag and drop.

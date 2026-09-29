@@ -4,7 +4,7 @@
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { send, type StartOptions } from './client.ts';
-import { searchUrl } from './commands.ts';
+import { searchUrl, toUrl } from './commands.ts';
 
 const REF = { type: 'integer', description: 'The number of an element in the latest snapshot' };
 
@@ -56,8 +56,9 @@ const TOOLS: Tool[] = [
   {
     name: 'browser_click',
     cmd: 'click',
-    description: 'Click an element. Fails with an explanation if something (a banner, a modal) covers it.',
-    inputSchema: { type: 'object', properties: { ref: REF }, required: ['ref'] },
+    description:
+      'Click an element. Fails with an explanation if something (a banner, a modal) covers it. With new_tab=true, open a link in a new tab instead, keeping this page.',
+    inputSchema: { type: 'object', properties: { ref: REF, new_tab: { type: 'boolean' } }, required: ['ref'] },
   },
   {
     name: 'browser_type',
@@ -73,7 +74,7 @@ const TOOLS: Tool[] = [
     name: 'browser_fill',
     cmd: 'fill',
     description:
-      'Fill several fields at once and return what changed: text for text fields, an option (text or value) for selects, "on" or "off" for checkboxes and radio buttons. With submit=true, press Enter afterwards.',
+      'Fill several fields at once and return what changed: text for text fields, an option (text or value) for selects, "on" or "off" for checkboxes and radio buttons, a number for sliders. With submit=true, press Enter afterwards.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -138,6 +139,23 @@ const TOOLS: Tool[] = [
     description:
       'List the files this session downloaded, with their paths. Clicking a download link (or opening a file address) saves the file and says where in the result.',
     inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'browser_drag',
+    cmd: 'drag',
+    description:
+      'Drag an element (a ref: a card, an item to reorder, a slider) onto another ref, or onto text on the drop zone (drop zones are rarely refs), and return what changed.',
+    inputSchema: {
+      type: 'object',
+      properties: { from: REF, to: { type: ['integer', 'string'], description: 'A ref, or text on the drop zone' } },
+      required: ['from', 'to'],
+    },
+  },
+  {
+    name: 'browser_new_tab',
+    cmd: 'newtab',
+    description: 'Open a new tab (on `url`, or blank) and switch to it; the current page stays open in its tab.',
+    inputSchema: { type: 'object', properties: { url: { type: 'string' } } },
   },
   {
     name: 'browser_tabs',
@@ -224,6 +242,8 @@ export async function serveMcp(sessionName: string, start: StartOptions) {
           const args = { ...(params.arguments ?? {}) };
           if (tool.cmd === 'upload' && Array.isArray(args.files)) args.files = args.files.map((f: unknown) => resolve(String(f)));
           if (tool.name === 'browser_search') args.url = searchUrl(String(args.query ?? ''));
+          if (tool.cmd === 'click' && args.new_tab) args.newTab = true;
+          if (tool.cmd === 'newtab' && args.url) args.url = toUrl(String(args.url));
           if (tool.cmd === 'wait' && args.text !== undefined) args[args.gone ? 'gone' : 'for'] = String(args.text);
           const command = { cmd: tool.cmd, args, client };
           const text = await send(sessionName, command, tool.cmd === 'goto' ? start : undefined);

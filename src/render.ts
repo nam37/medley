@@ -53,7 +53,7 @@ export interface PageModel {
   sy: number;
   bg?: string; // the page's background and text colors
   fg?: string;
-  pics?: { r: Rect; alt: string; ov?: string }[];
+  pics?: { r: Rect; alt: string; ov?: string; bg?: 1 | 2 }[];
   root: El | null;
 }
 
@@ -86,12 +86,13 @@ export interface LayoutGroup {
  */
 export interface Visual {
   width: number;
+  height: number; // the page's, for telling when it grew
   canvas: string; // page background color
   text: string; // page text color
   boxes: { r: Rect; fg?: string; bold?: 1; table?: 1; layer?: number }[]; // a table's lines are its rows, `| a | b |`
   lines: number[][]; // for each body line, the boxes its text came from
   decor: { r: Rect; bg?: string; bd?: string; layer?: number }[]; // backgrounds and card borders
-  images: { r: Rect; alt: string; layer?: number }[];
+  images: { r: Rect; alt: string; layer?: number; bg?: 1 | 2 }[]; // bg: a CSS background, 1 a picture, 2 a gradient
   layers: { r: Rect; bg?: string; bd?: string }[];
   refs: Record<number, { fg?: string; bg?: string }>;
 }
@@ -151,14 +152,15 @@ export function renderParts(page: PageModel): Rendered {
   const links = hrefs.map(([ref, href]) => `[${ref}] ${href}`);
   const visual: Visual = {
     width: page.vw,
+    height: page.dh,
     canvas: page.bg ?? '#ffffff',
     text: page.fg ?? '#000000',
     boxes: r.boxes,
     lines: lineBoxes,
     decor: r.decor,
-    images: (page.pics ?? []).map(({ r: box, alt, ov }) => {
+    images: (page.pics ?? []).map(({ r: box, alt, ov, bg }) => {
       const layer = ov ? r.layerOf.get(ov) : undefined;
-      return layer ? { r: box, alt, layer } : { r: box, alt };
+      return { r: box, alt, ...(layer ? { layer } : {}), ...(bg ? { bg } : {}) };
     }),
     layers: r.layers,
     refs: r.refStyles,

@@ -564,11 +564,17 @@ export class Session {
     const { cssContentSize } = await this.page.send('Page.getLayoutMetrics');
     const width = Math.ceil(cssContentSize.width);
     const height = Math.min(Math.ceil(cssContentSize.height), 16000);
+    // Elements with a CSS background picture or gradient stay visible too,
+    // with their own text made transparent.
     await this.page.evaluate(`(() => {
+      for (const el of document.body ? document.body.querySelectorAll('*') : []) {
+        if (getComputedStyle(el).backgroundImage !== 'none') el.setAttribute('data-medley-picture', '');
+      }
       const s = document.createElement('style');
       s.id = '__medley_pictures';
       s.textContent = 'body * { visibility: hidden !important; transition: none !important; }' +
-        ' img, video, canvas, svg[role=img], svg[role=img] * { visibility: visible !important; }';
+        ' img, video, canvas, svg[role=img], svg[role=img] * { visibility: visible !important; }' +
+        ' [data-medley-picture] { visibility: visible !important; color: transparent !important; text-shadow: none !important; }';
       document.documentElement.appendChild(s);
     })()`);
     try {
@@ -579,7 +585,10 @@ export class Session {
       });
       return { image: shot.data, width, height, scale };
     } finally {
-      await this.page.evaluate(`document.getElementById('__medley_pictures')?.remove()`);
+      await this.page.evaluate(`(() => {
+        document.getElementById('__medley_pictures')?.remove();
+        for (const el of document.querySelectorAll('[data-medley-picture]')) el.removeAttribute('data-medley-picture');
+      })()`);
     }
   }
 

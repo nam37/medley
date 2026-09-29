@@ -290,6 +290,7 @@
 
   // Whether an element floats over the page: a modal <dialog>, or anything fixed in place.
   const overlays = [];
+  const backgrounds = []; // elements with a background picture, found on the way (see walk)
   function floats(el) {
     try {
       if (el.matches(':modal')) return true;
@@ -352,6 +353,14 @@
       paint(n, cs);
     }
     if (/^inline-(block|flex|grid)$/.test(cs.display)) n.box = 1;
+    // A picture set as a CSS background (a banner, a card's photo) or a
+    // gradient, drawn in the terminal UI's advanced grid like an <img>; but not
+    // a whole section's or the page's backdrop (taller than a window and a
+    // half), which would put everything over a picture.
+    if (vis && (!inline || n.box) && cs.backgroundImage !== 'none' && el.ownerDocument === document &&
+      r[2] >= 24 && r[3] >= 24 && r[3] <= 1.5 * innerHeight) {
+      backgrounds.push({ el, r, url: cs.backgroundImage.includes('url(') });
+    }
     const inner = { vis, pre: ctx.pre, cursor: cs.cursor, inRef: ctx.inRef, noText: ctx.noText };
 
     if (tag === 'br') return vis ? n : null;
@@ -468,16 +477,27 @@
 
   // Every visible picture, labelled or not, with where it is. Kept apart from
   // the tree so the text rendering can't change; the terminal UI draws them.
-  const pics = [];
+  // `bg` marks a CSS background: 1 a picture, 2 only a gradient. Backgrounds
+  // come first, since they're drawn under the pictures in them; one that a
+  // picture covers exactly (a placeholder behind a photo) is left out.
+  const layerOf = (el, pic) => {
+    const ov = overlays.findLastIndex((o) => o.contains(el)); // the innermost floating dialog it's in
+    if (ov >= 0) pic.ov = `${M.doc}:${ov + 1}`;
+    return pic;
+  };
+  const shown = [];
   for (const img of document.querySelectorAll('img, video, canvas, svg[role=img]')) {
     const r = rectOf(img);
     if (r[2] < 24 || r[3] < 24 || !img.checkVisibility({ visibilityProperty: true })) continue;
-    const pic = { r, alt: clean(img.getAttribute('alt') || img.getAttribute('aria-label') || '') };
-    const ov = overlays.findLastIndex((o) => o.contains(img)); // the innermost floating dialog it's in
-    if (ov >= 0) pic.ov = `${M.doc}:${ov + 1}`;
-    pics.push(pic);
-    if (pics.length >= 200) break;
+    shown.push(layerOf(img, { r, alt: clean(img.getAttribute('alt') || img.getAttribute('aria-label') || '') }));
+    if (shown.length >= 200) break;
   }
+  const covered = (r) => shown.some((p) => p.r.every((v, i) => Math.abs(v - r[i]) <= 2));
+  const pics = backgrounds
+    .filter(({ r }) => !covered(r))
+    .slice(0, 50)
+    .map(({ el, r, url }) => layerOf(el, { r, alt: url ? clean(el.getAttribute('aria-label') || el.getAttribute('title') || '') : '', bg: url ? 1 : 2 }))
+    .concat(shown);
   return {
     doc: M.doc,
     url: location.href,

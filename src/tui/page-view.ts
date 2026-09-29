@@ -113,6 +113,29 @@ interface Area {
   cols: number;
 }
 
+/** The terminal's size in pixels, once it has said (Sixel needs it). */
+export function pixelSize(ctx: RenderContext): { width: number; height: number } | null {
+  const r = ctx.resolution;
+  const ok = r && r.width > 0 && r.height > 0 && (ctx.terminalWidth ?? 0) > 0 && (ctx.terminalHeight ?? 0) > 0;
+  return ok ? r : null;
+}
+
+/** A picture's width and height in the terminal's pixels, drawn `cols` × `rows` cells (0, 0 when unknown). */
+export function pixelsFor(ctx: RenderContext, cols: number, rows: number): [number, number] {
+  const px = pixelSize(ctx);
+  if (!px) return [0, 0];
+  return [Math.max(1, Math.round((cols * px.width) / ctx.terminalWidth!)), Math.max(1, Math.round((rows * px.height) / ctx.terminalHeight!))];
+}
+
+/** How many times taller than wide a cell is: 2 until the terminal says. */
+export function cellAspect(ctx: RenderContext): number {
+  const px = pixelSize(ctx);
+  if (!px) return 2;
+  const w = px.width / ctx.terminalWidth!;
+  const h = px.height / ctx.terminalHeight!;
+  return w > 0 && h > 0 ? h / w : 2;
+}
+
 /** A picture on the page canvas: `image` indexes Visual.images. */
 interface Picture extends Area {
   image: number;
@@ -322,14 +345,29 @@ export class PageView extends Renderable {
 
   /** How this terminal draws pictures: Kitty graphics, Sixel, or block characters. */
   get imageProtocol(): 'kitty' | 'sixel' | 'blocks' {
-    return resolveImageRenderProtocol('auto', this._ctx.capabilities, !!this.pixelSize);
+    return resolveImageRenderProtocol('auto', this._ctx.capabilities, !!pixelSize(this._ctx));
   }
 
-  /** The terminal's size in pixels, once it has said. */
-  private get pixelSize() {
-    const r = this._ctx.resolution;
-    const ok = r && r.width > 0 && r.height > 0 && (this._ctx.terminalWidth ?? 0) > 0 && (this._ctx.terminalHeight ?? 0) > 0;
-    return ok ? r : null;
+  /** The page's pictures, once fetched: one screenshot of them, `scale` image pixels to a page pixel. */
+  get screenshot(): { image: NativeImage; scale: number } | null {
+    return this.picture;
+  }
+
+  /**
+   * The page's pictures worth looking at on their own (not gradients, not
+   * icons), top to bottom, and the first one that isn't above the view.
+   */
+  viewablePictures(): { list: { r: Rect; alt: string }[]; start: number } {
+    const v = this.visual;
+    if (!v) return { list: [], start: 0 };
+    const list = v.images
+      .filter((im) => im.bg !== 2 && im.r[2] >= 48 && im.r[3] >= 48 && im.r[0] < v.width && im.r[0] + im.r[2] > 0 && im.r[1] + im.r[3] > 0)
+      .sort((a, b) => a.r[1] - b.r[1] || a.r[0] - b.r[0]);
+    this.layout();
+    const box = v.lines[this.lineAt(this.topRow)]?.[0];
+    const y = box === undefined ? 0 : v.boxes[box].r[1];
+    const start = list.findIndex((im) => im.r[1] + im.r[3] > y);
+    return { list, start: start < 0 ? Math.max(0, list.length - 1) : start };
   }
 
   private dropPatches() {
@@ -580,10 +618,11 @@ export class PageView extends Renderable {
         const fullCols = Math.max(1, Math.round(im.r[2] * sx));
         const fullRows = Math.max(1, pageRow(im.r[3]));
         if (fullCol >= width || fullCol + fullCols <= 0) return;
-        // A background: nearly page-wide, or with sizable pictures lying on it (not
-        // just a small floating icon that happens to overlap).
+        // A background: a CSS one, nearly page-wide, or with sizable pictures
+        // lying on it (not just a small floating icon that happens to overlap).
         const area = im.r[2] * im.r[3];
         const background =
+          !!im.bg ||
           im.r[2] >= 0.8 * v.width ||
           v.images.some((o, i) => {
             if (i === image || o.r[2] * o.r[3] >= area || o.r[2] * o.r[3] < 0.03 * area) return false;
@@ -1125,9 +1164,7 @@ export class PageView extends Renderable {
     const width = Math.max(1, Math.min(src.image.width - left, Math.round(((c1 - c0) / p.cols) * bw)));
     const height = Math.max(1, Math.min(src.image.height - top, Math.round(((r1 - r0) / p.rows) * bh)));
     // Sixel needs the size in the terminal's pixels; without it OpenTUI draws blocks.
-    const px = this.pixelSize;
-    const pw = px ? Math.max(1, Math.round(((c1 - c0) * px.width) / this._ctx.terminalWidth!)) : 0;
-    const ph = px ? Math.max(1, Math.round(((r1 - r0) * px.height) / this._ctx.terminalHeight!)) : 0;
+    const [pw, ph] = pixelsFor(this._ctx, c1 - c0, r1 - r0);
     return buffer.drawImage(src.image, x0 + p.col + c0, yOf(p.row + r0), c1 - c0, r1 - r0, pw, ph, left, top, width, height, 'auto');
   }
 

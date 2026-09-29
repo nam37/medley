@@ -104,6 +104,7 @@ sweeps across the `medley` badge and the status line says what's happening.
 | / then n N | find text, next or previous match |
 | : | run any session command, e.g. `press Escape`, `wait 2`, `select 6 High` |
 | v | cycle the grid: no grid → partial grid (the page's main columns, like a sidebar beside the content) → advanced grid (the page as laid out, with its colors and pictures) |
+| i | the page's pictures one at a time, as big as the view fits them, starting from the first in view: ← → step, Esc closes |
 | r, R | reload the page, like a browser's refresh (R bypasses the cache) |
 | w | wait 2 seconds and show what the page changed by itself |
 | y n | accept or dismiss a `confirm()` the page opened (a `prompt()` asks for its answer) |
@@ -124,9 +125,10 @@ the same.
   back to the plain view.
 - **Advanced grid** draws the page itself, scaled to the terminal. Each block's
   text goes where the block was, in the page's own text colors, over its
-  background colors and card borders. Pictures come from a screenshot, which
-  the UI fetches once per page (`r` fetches it again), and are drawn the best
-  way the terminal can: Kitty graphics (Kitty, WezTerm, Ghostty), Sixel
+  background colors and card borders. Pictures (`<img>`, `<video>`, `<canvas>`,
+  and CSS background pictures and gradients) come from a screenshot, which the
+  UI fetches again whenever the page's pictures change or the page grows, and
+  are drawn the best way the terminal can: Kitty graphics (Kitty, WezTerm, Ghostty), Sixel
   (Windows Terminal and others), or else block characters, which work in any
   terminal. OpenTUI picks; `OPENTUI_IMAGE_PROTOCOL=blocks|sixel|kitty`
   overrides it. When text needs more rows than its box had on the page,
@@ -328,8 +330,8 @@ terminal cells, for looking at the grid modes without a terminal.
 against a real session on `test/app.html`: keys, a field prompt, a simulated
 agent acting in the same session, reload, a file prompt, the working badge,
 a masked password prompt, a download, bookmarks and history, the refs list, find, a command,
-a mouse click, back, a `confirm()`, a page that moves on by itself, the help
-overlay, and a search from the address prompt. It prints each frame as it goes.
+a mouse click, back, a `confirm()`, a page that moves on by itself, the picture
+viewer, the help overlay, and a search from the address prompt. It prints each frame as it goes.
 `bun run test:idle` starts a session that stops after 3 idle seconds and
 checks that a command keeps it going and that it then stops by itself.
 `bun run test:frames` serves a page on 127.0.0.1 that embeds a form from
@@ -357,8 +359,9 @@ test that times the frames, f draw techniques the terminal didn't report.
   `browser_screenshot`, which returns the image) shows them.
 - Some sites block headless Chrome; `--headed` may help.
 - `--headed` hasn't been exercised yet.
-- Advanced grid draws solid background colors and `<img>`, `<video>` and
-  `<canvas>` pictures, but not CSS background images or gradients. Elements
+- Advanced grid leaves out a CSS background taller than a window and a half
+  (a section's or the whole page's backdrop, which would put everything over a
+  picture) and pictures drawn by `::before` and `::after`. Elements
   fixed to the window (chat buttons, cookie bars) appear where they sat at the
   top of the page. Pictures inside tables aren't drawn, since a grid's rows
   don't follow the page's.

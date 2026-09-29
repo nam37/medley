@@ -253,6 +253,15 @@ try {
   await until('the tab to close', (f) => f.includes('tab 1/2') && f.includes('# Todos'));
   console.log('\nT, 3, d closed it, back in the tab it came from');
 
+  // i shows the page's pictures one at a time (not the banner's gradient), as big as the view.
+  await keys('i');
+  show('i shows the first picture', await until('the viewer', (f) => f.includes('1/2') && f.includes('The medley logo') && !f.includes("taking the page's")));
+  await keys('ARROW_RIGHT');
+  await until('the next picture', (f) => f.includes('2/2') && f.includes('The medley wordmark'));
+  await keys('ESCAPE');
+  await until('the viewer to close', (f) => f.includes('# Todos') && !f.includes('2/2'));
+  console.log('\n→ went on to the wordmark (a CSS background); Esc closed the viewer');
+
   await keys('?');
   show('? shows the keys', await until('the help', (f) => f.includes('any key to close')));
   await keys('x');

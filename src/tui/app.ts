@@ -22,6 +22,7 @@ import type { Screenshot, View } from '../session.ts';
 import { Bar, fit as fitText, type Segment } from './bar.ts';
 import { GRID_LABELS, GRID_MODES, PageView, type PageRef } from './page-view.ts';
 import { RefList, refItems, type RefItem } from './ref-list.ts';
+import { PictureView } from './picture-view.ts';
 import { Splash } from './splash.ts';
 import { THEME } from './theme.ts';
 
@@ -89,6 +90,7 @@ const HELP = [
   't                  open the selected link in a new tab',
   'T, or click tab 2/3 the open tabs: a number, then Enter switches (d closes)',
   'v                  grid: none → partial (main columns) → advanced (nested too)',
+  'i                  the page’s pictures one at a time, full size: ← → step, Esc closes',
   'a                  bookmark this page',
   "B                  bookmarks and this tab's history: a number, then Enter opens",
   'r, R               reload the page (R: bypassing the cache)',
@@ -114,6 +116,7 @@ export class App {
   private refsBox: BoxRenderable; // the refs pull-down (l, or a click on "N refs")
   private refList: RefList;
   private splash: Splash; // the logo, while there's no page yet
+  private viewer: PictureView; // one picture at a time, as big as the view (i)
   private picker: { items: PickItem[]; digits: string; tabs?: boolean } | null = null; // B's list, or T's (tabs)
 
   private current: View['page'] = null;
@@ -132,7 +135,9 @@ export class App {
   private quitting: 'no' | 'confirm' | 'session' = 'no'; // which quit question is showing
   private dialogPending = ''; // a "covered by a dialog" error to act on once the view catches up
   private stopped = false;
-  private picturesFor: string | null = null; // the document whose screenshot was asked for
+  private picturesFor = ''; // what the last screenshot of the page's pictures was of (see picturesKey)
+  private picturesAt = 0; // and when it was asked for
+  private picturesTimer: ReturnType<typeof setTimeout> | undefined;
   private digits = '';
   private message: { text: string; tone: Tone } = { text: '', tone: 'info' };
   private activity = ''; // the latest thing another client did
@@ -238,6 +243,8 @@ export class App {
 
     this.splash = new Splash(renderer, { position: 'absolute', top: 1, left: 0, right: 0, bottom: 2, zIndex: 5, visible: false });
     renderer.root.add(this.splash);
+    this.viewer = new PictureView(renderer, { position: 'absolute', top: 1, left: 0, right: 0, bottom: 2, zIndex: 6 });
+    renderer.root.add(this.viewer);
 
     renderer.keyInput.on('keypress', this.onKey);
     renderer.keyInput.on('paste', this.onPaste);
@@ -284,6 +291,7 @@ export class App {
 
   quit() {
     clearTimeout(this.activityTimer);
+    clearTimeout(this.picturesTimer);
     clearInterval(this.badgeTimer);
     this.splash.stop();
     this.stopWatching();
@@ -311,7 +319,7 @@ export class App {
     } catch (e) {
       const text = (e as Error).message;
       if (text.startsWith('no browser session')) {
-        this.show({ dialog: null, page: null });
+        this.show({ dialog: null, page: null, tabs: { current: 1, count: 1 } });
         this.say('no session is running; press o to open a page', 'warn');
       } else if (text.startsWith('unknown command')) {
         this.say(`${text}: ${STALE_HINT} (q, y, y, then start the UI again)`, 'error');
@@ -370,7 +378,7 @@ export class App {
       const changed = fresh ? new Set<number>() : changedLines(this.current!.body, page.body);
       this.current = page;
       this.page.setPage(page.body, new Map(page.labels), changed, fresh, page.layout, page.visual ?? null);
-      if (fresh) this.picturesFor = null;
+      if (fresh) this.viewer.close(); // its pictures were the old page's
       if (this.refsBox.visible) this.refreshRefs(); // the page changed under the open list
       void this.loadPictures();
     }
@@ -542,6 +550,7 @@ export class App {
     }
     if (this.picker) return this.pickerKey(key);
     if (this.refsBox.visible) return this.refsKey(key);
+    if (this.viewer.visible) return this.viewerKey(key);
     // Before the dialog keys, so a y here answers the quit question, not a page dialog.
     if (this.quitting !== 'no') return this.quitKey(key);
     if (this.dialog && this.dialogKey(key)) return;
@@ -637,8 +646,10 @@ export class App {
       case 'r':
         return void this.run('reload', { hard: key.shift });
       case 'w':
-        this.picturesFor = null; // pictures may have loaded or changed too
+        this.picturesFor = ''; // pictures may have loaded or changed too
         return void this.run('wait', { seconds: 2 });
+      case 'i':
+        return this.openViewer();
       case 'v':
         return this.cycleGrid();
       case 'a':
@@ -955,15 +966,35 @@ export class App {
   }
 
   /**
-   * In advanced grid, fetch a screenshot of the page's pictures (once per
-   * document). A terminal that draws real pixels (Kitty graphics, Sixel) gets
-   * them at full size; block characters need a quarter of that.
+   * What pictures the page has, as far as telling it changed goes: its
+   * document, how many pictures, and how tall it is. Content streaming in,
+   * or a dialog letting go of the page, changes it.
    */
-  private async loadPictures() {
+  private picturesKey(): string {
+    const v = this.current?.visual;
+    return v ? `${this.current!.doc}:${v.images.length}:${Math.round((v.height ?? 0) / 100)}` : '';
+  }
+
+  /**
+   * In advanced grid (or for the picture viewer), fetch a screenshot of the
+   * page's pictures, again whenever they change, but not more often than
+   * every 3 seconds. A terminal that draws real pixels (Kitty graphics,
+   * Sixel) gets them at full size; block characters need a quarter of that.
+   */
+  private async loadPictures(anyMode = false) {
+    const key = this.picturesKey();
     const doc = this.current?.doc;
-    if (!doc || this.page.gridMode !== 'advanced' || this.picturesFor === doc) return;
+    if (!doc || !key || (!anyMode && this.page.gridMode !== 'advanced') || this.picturesFor === key) return;
     if (!this.current?.visual?.images.length) return;
-    this.picturesFor = doc;
+    const again = this.picturesFor.startsWith(`${doc}:`);
+    const wait = again ? this.picturesAt + 3000 - Date.now() : 0;
+    clearTimeout(this.picturesTimer);
+    if (wait > 0) {
+      this.picturesTimer = setTimeout(() => void this.loadPictures(anyMode), wait);
+      return;
+    }
+    this.picturesFor = key;
+    this.picturesAt = Date.now();
     try {
       const full = this.page.imageProtocol !== 'blocks';
       const reply = await this.backend.request('pictures', full ? { scale: 1, quality: 85 } : {});
@@ -972,8 +1003,46 @@ export class App {
       // Sessions from before PNG pictures call it `jpeg`.
       const image = NativeImage.decode(Buffer.from(shot.image ?? (shot as unknown as { jpeg: string }).jpeg, 'base64'));
       this.page.setPicture(image, image.width / shot.width);
+      this.viewer.requestRender();
     } catch {
-      this.picturesFor = null; // try again next time
+      this.picturesFor = ''; // try again next time
+    }
+  }
+
+  /** i: the page's pictures one at a time, as big as the view, from the first one in view. */
+  private openViewer() {
+    const { list, start } = this.page.viewablePictures();
+    if (!list.length) return this.say('no pictures on this page', 'info');
+    this.viewer.open(list, start, () => this.page.screenshot);
+    void this.loadPictures(true);
+  }
+
+  private viewerKey(key: KeyEvent) {
+    switch (key.name) {
+      case 'right':
+      case 'down':
+      case 'pagedown':
+      case 'space':
+      case 'l':
+      case 'j':
+      case 'n':
+        return this.viewer.step(1);
+      case 'left':
+      case 'up':
+      case 'pageup':
+      case 'h':
+      case 'k':
+      case 'p':
+        return this.viewer.step(-1);
+      case 'home':
+        return this.viewer.step(-Infinity);
+      case 'end':
+        return this.viewer.step(Infinity);
+      case 'escape':
+      case 'return':
+      case 'i':
+      case 'q':
+        return this.viewer.close();
     }
   }
 

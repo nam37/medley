@@ -22,6 +22,7 @@ import type { Screenshot, View } from '../session.ts';
 import { Bar, fit as fitText, type Segment } from './bar.ts';
 import { GRID_LABELS, GRID_MODES, PageView, type PageRef } from './page-view.ts';
 import { RefList, refItems, type RefItem } from './ref-list.ts';
+import { Splash } from './splash.ts';
 import { THEME } from './theme.ts';
 
 /** How the UI reaches the session; a test can supply its own. */
@@ -108,6 +109,7 @@ export class App {
   private pagesText: TextRenderable;
   private refsBox: BoxRenderable; // the refs pull-down (l, or a click on "N refs")
   private refList: RefList;
+  private splash: Splash; // the logo, while there's no page yet
   private picker: { items: PickItem[]; digits: string } | null = null;
 
   private current: View['page'] = null;
@@ -225,6 +227,9 @@ export class App {
     this.refsBox.add(this.refList);
     renderer.root.add(this.refsBox);
 
+    this.splash = new Splash(renderer, { position: 'absolute', top: 1, left: 0, right: 0, bottom: 2, zIndex: 5, visible: false });
+    renderer.root.add(this.splash);
+
     renderer.keyInput.on('keypress', this.onKey);
     renderer.keyInput.on('paste', this.onPaste);
     this.input.on(InputRenderableEvents.ENTER, (value: string) => this.submitPrompt(value, true));
@@ -271,6 +276,7 @@ export class App {
   quit() {
     clearTimeout(this.activityTimer);
     clearInterval(this.badgeTimer);
+    this.splash.stop();
     this.stopWatching();
     this.renderer.keyInput.off('keypress', this.onKey);
     this.renderer.keyInput.off('paste', this.onPaste);
@@ -990,7 +996,15 @@ export class App {
     this.top.set(left, right);
   }
 
+  /** The logo stands in for the page until there is one, saying what's being done. */
+  private drawSplash() {
+    this.splash.show(!this.current);
+    const s = Math.floor((Date.now() - this.busySince) / 1000);
+    this.splash.setNote(this.busy && this.doing ? `${this.doing}…${s >= 2 ? ` ${s}s` : ''}` : '');
+  }
+
   private drawStatus() {
+    this.drawSplash();
     let left: Segment[];
     const question = {
       confirm: ' Quit medley? y to quit, any other key to stay',

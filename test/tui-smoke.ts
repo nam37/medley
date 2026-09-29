@@ -233,11 +233,11 @@ try {
 // With no session running, the address prompt opens by itself. A q typed
 // there (meant to quit) must not start a browser for "https://q".
 const EMPTY = 'tui-smoke-none';
-const bare = await createTestRenderer({ width: 100, height: 8 });
+const bare = await createTestRenderer({ width: 100, height: 24 });
 try {
   const idle = new App(bare.renderer, sessionBackend(EMPTY, {}));
   void idle.start();
-  show('no session: the address prompt opens', await waitFor(bare, 'the prompt', (f) => f.includes('words to search for')));
+  show('no session: the address prompt opens, over the logo', await waitFor(bare, 'the prompt', (f) => f.includes('words to search for') && f.includes('m e d l e y')));
   await bare.mockInput.typeText('q');
   bare.mockInput.pressEnter();
   show('q, Enter: refused', await waitFor(bare, 'the refusal', (f) => f.includes("isn't a web address")));

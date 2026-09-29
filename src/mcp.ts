@@ -15,7 +15,9 @@ element has a number, its ref: [7]Docs is a link, [8 button "Save"] or
 is [10 password "Password"], its value masked). Pass the number
 as \`ref\` to act on it. After an action you get only what changed, as diff hunks
 ("- " old line, "+ " new line) under the region they belong to; a new page comes
-back in full. Refs stay valid until the page navigates.`;
+back in full. Refs stay valid until the page navigates. A long page can be read in
+parts: outline=true gives its regions and headings with how many refs each holds,
+and section="<name>" gives one of them.`;
 
 interface Tool {
   name: string;
@@ -28,24 +30,26 @@ const TOOLS: Tool[] = [
   {
     name: 'browser_goto',
     cmd: 'goto',
-    description: 'Open a URL (starting the browser if needed) and return the page as text.',
-    inputSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
+    description: 'Open a URL (starting the browser if needed) and return the page as text (outline=true: only its regions and headings).',
+    inputSchema: { type: 'object', properties: { url: { type: 'string' }, outline: { type: 'boolean' } }, required: ['url'] },
   },
   {
     name: 'browser_search',
     cmd: 'goto',
     description: 'Search the web for `query` and return the results page as text (Bing by default).',
-    inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+    inputSchema: { type: 'object', properties: { query: { type: 'string' }, outline: { type: 'boolean' } }, required: ['query'] },
   },
   {
     name: 'browser_snapshot',
     cmd: 'snapshot',
-    description: 'Return the current page as text. With diff=true, return only what changed since you last looked.',
+    description: 'Return the current page as text. With diff=true, only what changed since you last looked; with outline=true, its regions and headings; with section="<name>", one of them.',
     inputSchema: {
       type: 'object',
       properties: {
         diff: { type: 'boolean', description: 'Only show changes since your last snapshot or action' },
         links: { type: 'boolean', description: 'Also list every link target' },
+        outline: { type: 'boolean', description: 'Only the regions and headings, with how many lines and refs each holds' },
+        section: { type: 'string', description: 'Only this region or heading (by its name) and what is under it' },
       },
     },
   },

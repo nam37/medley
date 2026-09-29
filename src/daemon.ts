@@ -161,9 +161,9 @@ function files(value: unknown): string[] {
 async function dispatch({ cmd, args = {} }: Command, client: string): Promise<string> {
   switch (cmd) {
     case 'goto':
-      return session.goto(client, String(args.url), { links: !!args.links });
+      return session.goto(client, String(args.url), { links: !!args.links, outline: !!args.outline });
     case 'snapshot':
-      return session.snapshot(client, { diff: !!args.diff, links: !!args.links });
+      return session.snapshot(client, { diff: !!args.diff, links: !!args.links, outline: !!args.outline, section: args.section ? String(args.section) : '' });
     case 'click':
       return session.click(client, ref(args.ref));
     case 'type':

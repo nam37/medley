@@ -14,9 +14,11 @@ export interface CommandFlags {
   diff?: boolean;
   submit?: boolean;
   hard?: boolean;
+  outline?: boolean;
+  section?: string;
 }
 
-const FLAGS = new Set(['--links', '--diff', '--submit', '--hard']);
+const FLAGS = new Set(['--links', '--diff', '--submit', '--hard', '--outline']);
 
 export class UsageError extends Error {}
 
@@ -68,14 +70,14 @@ export function parseCommand([command, ...rest]: string[], flags: CommandFlags =
   switch (command) {
     case 'goto':
       need(1, 'goto <url>');
-      return { cmd: 'goto', args: { url: toUrl(rest[0]), links: flags.links }, start: true };
+      return { cmd: 'goto', args: { url: toUrl(rest[0]), links: flags.links, outline: flags.outline }, start: true };
     case 'search':
       need(1, 'search <words>');
-      return { cmd: 'goto', args: { url: searchUrl(rest.join(' ')), links: flags.links }, start: true };
+      return { cmd: 'goto', args: { url: searchUrl(rest.join(' ')), links: flags.links, outline: flags.outline }, start: true };
     case 'history':
       return { cmd: 'history', args: { n: rest[0] } };
     case 'snapshot':
-      return { cmd: 'snapshot', args: { diff: flags.diff, links: flags.links } };
+      return { cmd: 'snapshot', args: { diff: flags.diff, links: flags.links, outline: flags.outline, section: flags.section } };
     case 'click':
       need(1, 'click <ref>');
       return { cmd: 'click', args: { ref: rest[0] } };

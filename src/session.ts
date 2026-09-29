@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { Browser, sleep, type Dialog, type DownloadEvent, type LaunchOptions, type Page } from './browser.ts';
 import { diffLines } from './diff.ts';
 import { parseKey } from './keys.ts';
+import { findTokens } from './tokens.ts';
 import { renderParts, type El, type LayoutGroup, type PageModel, type Visual } from './render.ts';
 
 const read = (file: string) => readFileSync(fileURLToPath(new URL(file, import.meta.url)), 'utf8');
@@ -126,6 +127,72 @@ function hasPlaceholder(root: El | null): boolean {
   return !!root && visit(root);
 }
 
+// ---- outlines: long pages in parts ---------------------------------------------
+
+interface Part {
+  line: number; // where it starts in the body
+  level: number; // 0 for a region (── nav ──), 1-6 for a heading
+  name: string; // the heading's or region's text, without its # or ── marks
+  text: string; // the line as shown
+}
+
+/** The regions and headings of a page, in order. */
+function partsOf(body: string[]): Part[] {
+  const parts: Part[] = [];
+  body.forEach((text, line) => {
+    const heading = /^(#{1,6}) (.*)$/.exec(text);
+    if (heading) parts.push({ line, level: heading[1].length, name: heading[2], text });
+    else if (/^── .* ──$/.test(text)) parts.push({ line, level: 0, name: text.slice(3, -3), text });
+  });
+  return parts;
+}
+
+/** Where a part ends: at the next part of the same or a higher level. */
+function partEnd(parts: Part[], i: number, total: number): number {
+  const p = parts[i];
+  const next = parts.slice(i + 1).find((q) => (p.level === 0 ? q.level === 0 : q.level <= p.level));
+  return next ? next.line : total;
+}
+
+const refCount = (lines: string[]) => lines.reduce((n, l) => n + findTokens(l).length, 0);
+
+/** The page as its regions and headings, each with how much it holds. */
+function outlineText(s: Snap): string {
+  const parts = partsOf(s.body);
+  const refs = refCount(s.body);
+  const lines = parts.map((p, i) => {
+    const end = partEnd(parts, i, s.body.length);
+    const inner = s.body.slice(p.line + 1, end);
+    const own = refCount(inner);
+    const size = `${inner.filter((l) => l.trim()).length} lines${own ? `, ${own} refs` : ''}`;
+    return `${p.level > 1 ? '  '.repeat(p.level - 1) : ''}${p.text}  (${size})`;
+  });
+  return [
+    ...s.header,
+    '',
+    `outline: ${s.body.length} lines, ${refs} refs · to read a part, ask for its section by name`,
+    ...(lines.length ? lines : ['(no headings or regions; this page is one part)']),
+  ].join('\n');
+}
+
+/** One part of the page, found by name (exactly, then as the start, then anywhere in it). */
+function sectionText(s: Snap, name: string): string {
+  const parts = partsOf(s.body);
+  const want = name.trim().toLowerCase();
+  const plain = (p: Part) => p.name.replace(/\[\d+\]/g, '').trim().toLowerCase();
+  const i = [
+    parts.findIndex((p) => plain(p) === want),
+    parts.findIndex((p) => plain(p).startsWith(want)),
+    parts.findIndex((p) => plain(p).includes(want)),
+  ].find((n) => n >= 0);
+  if (i === undefined) {
+    const names = parts.slice(0, 40).map((p) => p.name).join(' · ');
+    throw new Error(`no part of the page is called "${name}"; ${parts.length ? `its parts: ${names}` : 'it has no headings or regions'}`);
+  }
+  const end = partEnd(parts, i, s.body.length);
+  return [...s.header, '', `section "${parts[i].name}" · lines ${parts[i].line + 1}–${end} of ${s.body.length}`, ...s.body.slice(parts[i].line, end)].join('\n');
+}
+
 const fullText = (s: Snap, links = false) =>
   [...s.header, '', ...s.body, ...(links && s.links.length ? ['', '── links ──', ...s.links] : [])].join('\n');
 
@@ -177,7 +244,7 @@ export class Session {
 
   // ---- commands -----------------------------------------------------------
 
-  goto(client: string, url: string, { links = false } = {}): Promise<string> {
+  goto(client: string, url: string, { links = false, outline = false } = {}): Promise<string> {
     if (this.dialog) this.answerQuietly();
     const outcome: Outcome = { full: true };
     let what = `opened ${url}`;
@@ -194,18 +261,24 @@ export class Session {
         what = `opened ${url}: it's a file, so it was downloaded`;
       }
     };
-    return this.act(client, () => what, open, outcome).then((text) =>
-      links ? `${text}\n\n── links ──\n${this.baselines.get(client)!.links.join('\n')}` : text,
-    );
+    return this.act(client, () => what, open, outcome).then((text) => {
+      const snap = this.baselines.get(client)!;
+      // The page's outline in place of the whole page (notes and any dialog stay).
+      if (outline && outcome.full && !this.dialog) {
+        return [...text.split('\n').filter((l) => l.startsWith('note: ')), outlineText(snap)].join('\n');
+      }
+      return links ? `${text}\n\n── links ──\n${snap.links.join('\n')}` : text;
+    });
   }
 
-  async snapshot(client: string, { diff = false, links = false } = {}): Promise<string> {
+  async snapshot(client: string, { diff = false, links = false, outline = false, section = '' } = {}): Promise<string> {
     if (this.dialog) return this.dialogText();
     await this.ensureTab();
     if (diff) return this.report(client, 'changes since your last look');
     const snap = await this.capture();
     this.baselines.set(client, snap);
-    return [...this.takeNotes(), fullText(snap, links)].join('\n');
+    const page = section ? sectionText(snap, section) : outline ? outlineText(snap) : fullText(snap, links);
+    return [...this.takeNotes(), page].join('\n');
   }
 
   async click(client: string, ref: number): Promise<string> {

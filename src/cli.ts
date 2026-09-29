@@ -17,6 +17,8 @@ session commands:
   goto <url>                      open a page (starts the session if needed)
   search <words>                  search the web (Bing, or MEDLEY_SEARCH: a URL with %s for the words)
   snapshot [--diff]               print the current page (--diff: only what changed since you last looked)
+  snapshot --outline              the page's regions and headings, with how much each holds
+  snapshot --section <name>       one region or heading's part of the page
   click <ref>
   type <ref> <text> [--submit]    replace a field's text (--submit: then press Enter)
   select <ref> <option>           choose an option of a <select> by its text or value
@@ -50,6 +52,7 @@ options:
   --downloads <dir>  where the session saves downloads (default ~/Downloads/medley)
   --headed           start the session with a visible browser window
   --links            list link targets after a full snapshot
+  --outline          with goto or search: the new page's outline instead of all of it
   --color, --no-color  force ANSI color on or off (default: on for terminals)
   --width <px>       viewport width when starting a browser (default 1280)
   --browser <path>   Chrome/Edge executable (or MEDLEY_BROWSER)
@@ -73,6 +76,8 @@ const opts = {
   diff: false,
   submit: false,
   hard: false,
+  outline: false,
+  section: undefined as string | undefined,
   json: false,
   color:!!process.stdout.isTTY && !process.env.NO_COLOR,
   width: undefined as number | undefined,
@@ -91,6 +96,8 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--diff') opts.diff = true;
   else if (a === '--submit') opts.submit = true;
   else if (a === '--hard') opts.hard = true;
+  else if (a === '--outline') opts.outline = true;
+  else if (a === '--section') opts.section = value();
   else if (a === '--json') opts.json = true;
   else if (a === '--color') opts.color = true;
   else if (a === '--no-color') opts.color = false;

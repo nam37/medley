@@ -76,7 +76,8 @@ medley tui [url]
  Tab select · Enter open · o address · ← back · / find · : command · ? keys · q quit
 ```
 
-It shows the session's current page, or opens `url`. Refs are colored and
+It shows the session's current page, or opens `url`; until there's a page, medley's
+logo stands in for it, a light running along the "m". Refs are colored and
 link text is underlined. Lines that changed with the last action are marked in
 the left gutter. The status line shows the result of your last action on the
 left and, in purple, whatever another client (an agent) just did; the page
@@ -137,6 +138,8 @@ the same.
 medley goto <url>                   open a page (starts the session if needed)
 medley search <words>               search the web and open the results
 medley snapshot [--diff] [--links]  print the current page, or only what changed since you last looked
+medley snapshot --outline           the page's regions and headings, with how many lines and refs each holds
+medley snapshot --section <name>     one region or heading and what's under it
 medley click <ref>
 medley type <ref> <text> [--submit] replace a field's text, optionally pressing Enter
 medley select <ref> <option>        choose a <select> option by text or value
@@ -159,6 +162,12 @@ medley tui [url]                    the terminal UI, sharing the session
 medley snapshot <url> [--json]      one-off: fresh browser, print the page (or its raw model), exit
 medley mcp                          MCP server on stdio, sharing the session
 ```
+
+A long page can be read in parts: `goto <url> --outline` (or `search … --outline`)
+returns the new page's outline instead of all of it, and `snapshot --section
+History` returns one part, with refs that work as usual. On a Wikipedia article
+the outline is 1.5 KB where the page is 22 KB. MCP takes `outline` and
+`section` the same way.
 
 Options: `--session <name>` for parallel sessions, `--headed` to watch the
 browser window, `--no-color`, `--width <px>`, `--browser <path>`, and two that

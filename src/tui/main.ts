@@ -1,5 +1,5 @@
 import { createCliRenderer } from '@opentui/core';
-import { request, sessionIsStale, watch, type StartOptions } from '../client.ts';
+import { prewarm, request, sessionIsStale, watch, type StartOptions } from '../client.ts';
 import { App, type Backend } from './app.ts';
 
 /** A backend that talks to the named session daemon (starting it when asked). */
@@ -15,6 +15,7 @@ export function sessionBackend(session: string, start: StartOptions): Backend {
       return () => abort.abort();
     },
     stale: () => sessionIsStale(session),
+    prewarm: () => prewarm(session, start),
   };
 }
 
@@ -24,6 +25,12 @@ export async function runTui({ session, start, url }: { session: string; start: 
   void app.start(url);
   await app.closed;
   renderer.destroy();
+  // A browser started ahead of time for a page that was never opened isn't left running.
+  if (app.prewarmedUnused) {
+    await prewarm(session, start); // if it's still starting, let it finish so it can be stopped
+    await request(session, { cmd: 'stop', client: 'tui' }).catch(() => {});
+    process.exit(0);
+  }
   if (app.stoppedSession) {
     process.stdout.write('Closed medley and stopped the browser session.\n');
   } else if (app.attached) {

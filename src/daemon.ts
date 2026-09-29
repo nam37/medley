@@ -51,7 +51,14 @@ const server = Bun.serve({
     }
     resetIdle();
     const client = command.client ?? 'cli';
-    const run = queue.then(() => dispatch(command, client));
+    const run = queue.then(async () => {
+      const started = performance.now();
+      try {
+        return await dispatch(command, client);
+      } finally {
+        logTiming(command, client, performance.now() - started);
+      }
+    });
     queue = run.catch(() => {});
     try {
       const text = await run;
@@ -96,6 +103,16 @@ function eventStream(req: Request): Response {
 function announce(event: SessionEvent) {
   const chunk = `data: ${JSON.stringify(event)}\n\n`;
   for (const send of watchers) send(chunk);
+}
+
+// Each command, with how long it took and where the time went, goes to the
+// session's log (~/.medley/<name>.log), for telling what makes a page slow.
+const QUIET = new Set(['status', 'screenshot', 'events']);
+function logTiming({ cmd, args }: Command, client: string, ms: number) {
+  const parts = session.takeTiming();
+  if (QUIET.has(cmd)) return;
+  const what = cmd === 'goto' ? `goto ${args?.url}` : cmd;
+  console.log(`${new Date().toISOString()} ${client} ${what} ${Math.round(ms)}ms${parts ? ` (${parts})` : ''}`);
 }
 
 function summarize({ cmd, args }: Command, text: string): string {

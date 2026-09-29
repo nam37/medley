@@ -120,6 +120,16 @@ const DOM_QUIET = (quiet: number, max: number) => `new Promise((resolve) => {
   else start();
 })`;
 
+// Requests that can't change a page's text or structure, so the page is
+// settled without waiting for them (images keep arriving long after the text
+// is there), and long-lived streams that never finish.
+const IGNORED_REQUESTS = new Set([
+  'Image', 'Media', 'Font', 'Ping', 'Manifest', 'CSPViolationReport', 'TextTrack',
+  'Prefetch', 'Preflight', 'EventSource', 'WebSocket', 'SignedExchange',
+]);
+// A request still open after this long is a long-poll or a stream; settling doesn't wait for it.
+const STALE_REQUEST_MS = 3000;
+
 /** A frame of the page, and the CDP session that owns its document. */
 interface Frame {
   session: string;
@@ -127,7 +137,7 @@ interface Frame {
 }
 
 export class Page {
-  private inflight = new Set<string>();
+  private inflight = new Map<string, { at: number; loader: string }>(); // requests that may still change the page
   private loading = false; // the main frame is loading a new document
   private mainFrameId = '';
   // Medley's scripts run in an isolated world of the page's main frame: they
@@ -165,7 +175,7 @@ export class Page {
     this.on((method, p) => {
       switch (method) {
         case 'Network.requestWillBeSent':
-          this.inflight.add(p.requestId);
+          this.requestStarted(p);
           break;
         case 'Network.loadingFinished':
         case 'Network.loadingFailed':
@@ -185,6 +195,8 @@ export class Page {
             this.mainFrameId = p.frame.id;
             this.world = null; // a new document
             this.frames.set(p.frame.id, { session: this.sessionId, parentId: null });
+            // Requests of the old document may never report finishing; they no longer matter.
+            for (const [id, r] of this.inflight) if (r.loader !== p.frame.loaderId) this.inflight.delete(id);
             this.onNavigated?.();
           }
           break;
@@ -273,7 +285,7 @@ export class Page {
         break;
       }
       case 'Network.requestWillBeSent':
-        if (session !== this.sessionId) this.inflight.add(p.requestId);
+        if (session !== this.sessionId) this.requestStarted(p);
         break;
       case 'Network.loadingFinished':
       case 'Network.loadingFailed':
@@ -393,7 +405,7 @@ export class Page {
     const nav = await this.send('Page.navigate', { url });
     if (nav.errorText) throw new Error(`could not open ${url}: ${nav.errorText}`);
     if (nav.loaderId) await stopped; // same-document (#hash) navigations have no loader
-    await this.settle();
+    // The caller settles (Session.act does, after every action).
   }
 
   /** Reload the page, from the cache as usual or, when `hard`, from the network. */
@@ -401,7 +413,6 @@ export class Page {
     const stopped = this.waitFor('Page.frameStoppedLoading', 20000, (p) => p.frameId === this.mainFrameId);
     await this.send('Page.reload', { ignoreCache: hard });
     await stopped;
-    await this.settle();
   }
 
   /** This tab's history: its pages, oldest first, and which one is showing. */
@@ -438,13 +449,29 @@ export class Page {
     }
   }
 
+  /** Note a request that could change what the page shows (see IGNORED_REQUESTS). */
+  private requestStarted(p: { requestId: string; type?: string; loaderId?: string; frameId?: string }) {
+    if (p.type && IGNORED_REQUESTS.has(p.type)) return;
+    // A frame's own page is reported finished in the frame's session, which
+    // may attach after it began; frames are waited for when they're read.
+    if (p.type === 'Document' && p.frameId && p.frameId !== this.mainFrameId) return;
+    this.inflight.set(p.requestId, { at: Date.now(), loader: p.loaderId ?? '' });
+  }
+
   private async networkQuiet(idle = 400, max = 4000) {
-    // Long-polls and analytics beacons never finish, so allow a couple in flight.
     const until = Date.now() + max;
     let quietSince = Date.now();
     while (Date.now() < until && !this.closed) {
-      if (this.inflight.size > 2) quietSince = Date.now();
-      else if (Date.now() - quietSince >= idle) return;
+      // Long-polls, streams and analytics never finish: a request open longer
+      // than STALE_REQUEST_MS doesn't count, and a couple more are allowed.
+      const now = Date.now();
+      let open = 0;
+      for (const [id, r] of this.inflight) {
+        if (now - r.at < STALE_REQUEST_MS) open++;
+        else if (now - r.at > 60_000) this.inflight.delete(id); // forget it
+      }
+      if (open > 2) quietSince = now;
+      else if (now - quietSince >= idle) return;
       await sleep(50);
     }
   }

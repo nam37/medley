@@ -139,6 +139,7 @@ export class Session {
   private openers = new Map<Page, Page>(); // the tab each popup came from, to return to when it closes
   private refs: { doc: string; map: RefMap } | null = null; // page-wide ref numbers for the current document
   private acting = 0; // commands running now; a navigation they cause is theirs to report
+  private timing: { action?: number; settle?: number; read?: number } = {}; // the last command's, in ms
   private changePending = false;
   private downloads: { name: string; path: string; bytes: number }[] = []; // finished, in order
   private downloadsStarted = 0; // how many downloads have begun, to tell which ones an action started
@@ -591,10 +592,14 @@ export class Session {
     });
     const page = this.page;
     const downloadsBefore = this.downloadsStarted;
+    const t0 = performance.now();
     const work = (async () => {
       await action();
+      const t1 = performance.now();
       await page.settle();
       if (this.downloadsStarted > downloadsBefore) await this.downloadsFinish(30_000);
+      this.timing.action = t1 - t0;
+      this.timing.settle = performance.now() - t1;
     })();
     work.catch(() => {}); // if a dialog wins the race, this ends (or fails) in the background
     try {
@@ -632,6 +637,7 @@ export class Session {
   }
 
   private async capture(): Promise<Snap> {
+    const t0 = performance.now();
     let model: PageModel;
     try {
       model = await this.extract();
@@ -641,7 +647,15 @@ export class Session {
       model = await this.extract();
     }
     const r = renderParts(model);
+    this.timing.read = performance.now() - t0;
     return { doc: model.doc, url: model.url, title: model.title, ...r };
+  }
+
+  /** Where the last command's time went, for the log: "action 520 · settle 610 · read 95". */
+  takeTiming(): string {
+    const parts = Object.entries(this.timing).map(([k, ms]) => `${k} ${Math.round(ms)}`);
+    this.timing = {};
+    return parts.join(' · ');
   }
 
   /**

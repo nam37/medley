@@ -21,6 +21,7 @@ import { changedLines } from '../diff.ts';
 import type { Screenshot, View } from '../session.ts';
 import { Bar, fit as fitText, type Segment } from './bar.ts';
 import { GRID_LABELS, GRID_MODES, PageView, type PageRef } from './page-view.ts';
+import { RefList, refItems, type RefItem } from './ref-list.ts';
 import { THEME } from './theme.ts';
 
 /** How the UI reaches the session; a test can supply its own. */
@@ -31,6 +32,8 @@ export interface Backend {
   watch(onEvent: (e: SessionEvent) => void, onConnection: (connected: boolean) => void): () => void;
   /** Whether the session runs other (older) code than this UI, so it may not know newer commands. */
   stale?(): boolean;
+  /** Start the session in the background, so it's ready when the first page is asked for. */
+  prewarm?(): Promise<void>;
 }
 
 /** A line of the bookmarks-and-history list: a bookmark, or a page of this tab's history. */
@@ -58,7 +61,7 @@ const PROMPT_HINTS: Record<PromptKind, string> = {
 type Tone = 'info' | 'ok' | 'warn' | 'error';
 const TONE = { info: THEME.text, ok: THEME.ok, warn: THEME.warn, error: THEME.error };
 
-const HINTS = 'Tab select · Enter open · o address · ← back · / find · v grid · ? keys · q quit';
+const HINTS = 'Tab select · Enter open · l refs · o address · ← back · / find · v grid · ? keys · q quit';
 const BADGE = ' medley ';
 const BADGE_FRAME_MS = 90;
 const BADGE_SWEEP = 2 * (BADGE.length - 1); // frames for the band to go across and back
@@ -79,6 +82,7 @@ const HELP = [
   '← b, → f           back, forward',
   '/, then n N        find text, then the next or previous match',
   ':                  run a command: press Escape, wait 2, select 6 High, …',
+  'l, or click N refs  the page’s refs in a list: type to filter, Enter opens',
   'v                  grid: none → partial (main columns) → advanced (nested too)',
   'a                  bookmark this page',
   "B                  bookmarks and this tab's history: a number, then Enter opens",
@@ -102,12 +106,15 @@ export class App {
   private help: BoxRenderable;
   private pages: BoxRenderable; // the bookmarks-and-history list (B)
   private pagesText: TextRenderable;
+  private refsBox: BoxRenderable; // the refs pull-down (l, or a click on "N refs")
+  private refList: RefList;
   private picker: { items: PickItem[]; digits: string } | null = null;
 
   private current: View['page'] = null;
   private dialog: View['dialog'] = null;
   private tabs: View['tabs'] = { current: 1, count: 1 };
   private busy = false;
+  private prewarmed = false; // this UI started the session in the background (see start)
   private doing = ''; // what the running command is doing, for the status line
   private busySince = 0;
   private badgeTimer: ReturnType<typeof setInterval> | undefined;
@@ -133,7 +140,13 @@ export class App {
     private backend: Backend,
   ) {
     const root = new BoxRenderable(renderer, { flexDirection: 'column', width: '100%', height: '100%' });
-    this.top = new Bar(renderer, { bg: THEME.barBg });
+    this.top = new Bar(renderer, {
+      bg: THEME.barBg,
+      // "N refs" is on the right: a click there pulls down the list of refs.
+      onClick: (x, right) => {
+        if (right >= 0 && x >= right) this.openRefs();
+      },
+    });
     this.page = new PageView(renderer, {
       flexGrow: 1,
       onActivate: (ref) => this.activate(ref),
@@ -195,6 +208,23 @@ export class App {
     this.pages.add(this.pagesText);
     renderer.root.add(this.pages);
 
+    this.refsBox = new BoxRenderable(renderer, {
+      position: 'absolute',
+      top: 1,
+      right: 1,
+      width: 60,
+      height: 10,
+      zIndex: 11,
+      visible: false,
+      border: true,
+      borderStyle: 'rounded',
+      borderColor: THEME.accentBg,
+      backgroundColor: THEME.barBg,
+    });
+    this.refList = new RefList(renderer, { width: '100%', height: '100%', onPick: (item) => this.pickRef(item) });
+    this.refsBox.add(this.refList);
+    renderer.root.add(this.refsBox);
+
     renderer.keyInput.on('keypress', this.onKey);
     renderer.keyInput.on('paste', this.onPaste);
     this.input.on(InputRenderableEvents.ENTER, (value: string) => this.submitPrompt(value, true));
@@ -211,8 +241,21 @@ export class App {
   /** Open `url`, or else show the session's current page. */
   async start(url?: string) {
     if (url) await this.run('goto', { url }, { start: true });
-    else if (!(await this.run('snapshot', {}, { quiet: true }))) return this.openPrompt({ kind: 'url', label: 'open' });
+    else if (!(await this.run('snapshot', {}, { quiet: true }))) {
+      this.openPrompt({ kind: 'url', label: 'open' });
+      // Start the browser while the address is typed; it takes a second or two.
+      if (this.backend.prewarm) {
+        this.prewarmed = true;
+        void this.backend.prewarm();
+      }
+      return;
+    }
     if (this.backend.stale?.()) this.say(`${STALE_HINT}: q, y, n, then start the UI again`, 'warn');
+  }
+
+  /** Whether this UI started a session in the background that never opened a page (to stop on quit). */
+  get prewarmedUnused(): boolean {
+    return this.prewarmed && !this.current && !this.stopped;
   }
 
   /** Whether a page from a running session is showing. */
@@ -300,6 +343,7 @@ export class App {
       this.current = page;
       this.page.setPage(page.body, new Map(page.labels), changed, fresh, page.layout, page.visual ?? null);
       if (fresh) this.picturesFor = null;
+      if (this.refsBox.visible) this.refreshRefs(); // the page changed under the open list
       void this.loadPictures();
     }
     if (this.dialog?.type === 'prompt' && !this.prompt) {
@@ -469,6 +513,7 @@ export class App {
       return;
     }
     if (this.picker) return this.pickerKey(key);
+    if (this.refsBox.visible) return this.refsKey(key);
     // Before the dialog keys, so a y here answers the quit question, not a page dialog.
     if (this.quitting !== 'no') return this.quitKey(key);
     if (this.dialog && this.dialogKey(key)) return;
@@ -574,7 +619,7 @@ export class App {
         return this.openPrompt({ kind: 'url', label: 'open' }, this.current?.url ?? '');
       case 'l':
         if (key.ctrl) return this.openPrompt({ kind: 'url', label: 'open' }, this.current?.url ?? '');
-        return;
+        return this.openRefs();
       case 'q':
         if (key.shift) return this.quit(); // Q quits without asking, as in Lynx
         this.quitting = 'confirm';
@@ -597,6 +642,83 @@ export class App {
       const at = this.page.nextMatch(ch === 'n' ? 1 : -1);
       return this.say(`match ${at} of ${this.page.matchCount} · n next · N previous`, 'info');
     }
+  }
+
+  // ---- the refs pull-down ------------------------------------------------------------
+
+  private openRefs() {
+    if (!this.current) return this.say('no page is open', 'info');
+    this.refList.setItems(refItems(this.current.labels, this.current.hrefs));
+    const w = this.renderer.width;
+    this.refsBox.width = Math.max(30, Math.min(w - 2, Math.max(60, Math.floor(w * 0.7))));
+    this.sizeRefs();
+    this.refsBox.visible = true;
+  }
+
+  private refreshRefs() {
+    const filter = this.refList.filter;
+    this.refList.setItems(refItems(this.current?.labels ?? [], this.current?.hrefs ?? []));
+    this.refList.setFilter(filter);
+    this.sizeRefs();
+  }
+
+  /** Fit the box to what's listed (up to the screen) and say so in its title. */
+  private sizeRefs() {
+    const { shown, all } = this.refList.count;
+    this.refsBox.height = Math.max(3, Math.min(shown + 2, this.renderer.height - 3));
+    const filter = this.refList.filter;
+    const what = filter ? `${shown} of ${all} refs match "${filter}"` : `${all} refs · type to filter`;
+    this.refsBox.title = ` ${what} · Enter opens · Esc closes `;
+  }
+
+  private closeRefs() {
+    this.refsBox.visible = false;
+  }
+
+  private refsKey(key: KeyEvent) {
+    const list = this.refList;
+    switch (key.name) {
+      case 'escape':
+        if (list.filter) {
+          list.setFilter('');
+          return this.sizeRefs();
+        }
+        return this.closeRefs();
+      case 'return':
+      case 'enter': {
+        const item = list.selected;
+        if (item) this.pickRef(item);
+        return;
+      }
+      case 'up':
+        return list.move(-1);
+      case 'down':
+        return list.move(1);
+      case 'pageup':
+        return list.move(-list.pageSize);
+      case 'pagedown':
+        return list.move(list.pageSize);
+      case 'home':
+        return list.move(-Infinity);
+      case 'end':
+        return list.move(Infinity);
+      case 'backspace':
+        list.setFilter([...list.filter].slice(0, -1).join(''));
+        return this.sizeRefs();
+    }
+    const ch = key.sequence;
+    if (ch && !key.ctrl && !key.meta && [...ch].length === 1 && !/[\u0000-\u001f\u007f]/.test(ch)) {
+      list.setFilter(list.filter + ch);
+      this.sizeRefs();
+    }
+  }
+
+  /** Open a ref from the list: as if it were chosen on the page. */
+  private pickRef(item: RefItem) {
+    this.closeRefs();
+    const ref = this.page.hasRef(item.ref);
+    if (ref) this.activate(ref);
+    else void this.run('click', { ref: item.ref });
   }
 
   // ---- bookmarks and history ------------------------------------------------------

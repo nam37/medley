@@ -1,7 +1,7 @@
 // A one-row bar of styled segments: some on the left, some right-aligned.
 // When both don't fit, the right side gets at most 40% and the left is cut short (with …).
 
-import { Renderable, type OptimizedBuffer, type RenderContext, type RenderableOptions, type RGBA } from '@opentui/core';
+import { Renderable, type MouseEvent, type OptimizedBuffer, type RenderContext, type RenderableOptions, type RGBA } from '@opentui/core';
 import { THEME } from './theme.ts';
 
 export interface Segment {
@@ -14,6 +14,8 @@ export interface Segment {
 export interface BarOptions extends RenderableOptions<Bar> {
   bg?: RGBA;
   fg?: RGBA;
+  /** A click, at column `x` of the bar; `right` is where the right-hand segments start (-1: none). */
+  onClick?: (x: number, right: number) => void;
 }
 
 /** The longest prefix of `text` that fits in `width` cells, ending in … if cut. */
@@ -38,9 +40,12 @@ export class Bar extends Renderable {
   private right: Segment[] = [];
   private bg?: RGBA;
   private fg: RGBA;
+  private onClick?: (x: number, right: number) => void;
+  private rightStart = -1; // where the right-hand segments were last drawn
 
-  constructor(ctx: RenderContext, { bg, fg, ...options }: BarOptions) {
+  constructor(ctx: RenderContext, { bg, fg, onClick, ...options }: BarOptions) {
     super(ctx, { height: 1, ...options });
+    this.onClick = onClick;
     this.bg = bg;
     this.fg = fg ?? (bg ? THEME.barFg : THEME.text);
   }
@@ -70,5 +75,10 @@ export class Bar extends Renderable {
     };
     draw(this.left, x0, x0 + width - (rightWidth ? rightWidth + 2 : 0));
     draw(this.right, x0 + width - rightWidth, x0 + width);
+    this.rightStart = rightWidth ? width - rightWidth : -1;
+  }
+
+  protected onMouseEvent(e: MouseEvent) {
+    if (e.type === 'down' && e.button === 0) this.onClick?.(e.x - this.screenX, this.rightStart);
   }
 }

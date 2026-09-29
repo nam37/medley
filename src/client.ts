@@ -4,7 +4,7 @@
 
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -112,11 +112,35 @@ export async function request(name: string, command: Command, start?: StartOptio
       removeSessionInfo(name); // left behind by a daemon that died
     }
   }
+  const pending = starting.get(name);
+  if (pending) return post(await pending, command); // being started already (see prewarm)
   if (!start) {
     const which = name === 'default' ? '' : ` "${name}"`;
     throw new Error(`no browser session${which} is running; start one with: medley goto <url>`);
   }
-  return post(await startDaemon(name, start), command);
+  return post(await startOnce(name, start), command);
+}
+
+// Sessions this process is starting, so a second request waits for the same one.
+const starting = new Map<string, Promise<SessionInfo>>();
+
+function startOnce(name: string, opts: StartOptions): Promise<SessionInfo> {
+  let p = starting.get(name);
+  if (!p) {
+    p = startDaemon(name, opts).finally(() => starting.delete(name));
+    starting.set(name, p);
+  }
+  return p;
+}
+
+/**
+ * Start the named session in the background if none is running, so the
+ * browser (which takes a second or two to start) is ready by the time the
+ * first page is asked for. Resolves once it's up; never rejects.
+ */
+export async function prewarm(name: string, opts: StartOptions): Promise<void> {
+  if (readSessionInfo(name)) return;
+  await startOnce(name, opts).catch(() => {});
 }
 
 export async function send(name: string, command: Command, start?: StartOptions): Promise<string> {
@@ -193,7 +217,12 @@ async function startDaemon(name: string, opts: StartOptions): Promise<SessionInf
   if (opts.width) args.push('--width', String(opts.width));
   if (opts.profile) args.push('--profile', opts.profile);
   if (opts.downloads) args.push('--downloads', opts.downloads);
-  const log = openSync(logFile(name), 'a');
+  // The log gets a line per command; start it over once it passes a megabyte.
+  let size = 0;
+  try {
+    size = statSync(logFile(name)).size;
+  } catch {}
+  const log = openSync(logFile(name), size > 1_000_000 ? 'w' : 'a');
   const child = spawn(process.execPath, args, { detached: true, stdio: ['ignore', log, log], windowsHide: true });
   child.unref();
   closeSync(log);
@@ -210,7 +239,7 @@ async function startDaemon(name: string, opts: StartOptions): Promise<SessionInf
       } catch {}
       throw new Error(`the session failed to start${why ? `: ${why}` : ''}; see ${logFile(name)}`);
     }
-    await sleep(100);
+    await sleep(25); // the browser takes a second or two; don't add to it
   }
   throw new Error(`timed out starting the session; see ${logFile(name)}`);
 }

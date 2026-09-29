@@ -9,7 +9,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { readSessionInfo, send } from '../src/client.ts';
+import { prewarm, readSessionInfo, send } from '../src/client.ts';
 import { App } from '../src/tui/app.ts';
 import { sessionBackend } from '../src/tui/main.ts';
 
@@ -129,6 +129,22 @@ try {
   await keys('a');
   show('a bookmarks the page', await until('the bookmark', (f) => f.includes('bookmarked "Medley test app"')));
 
+  // l pulls down the page's refs; typing filters them, Enter opens the one selected.
+  await keys('l');
+  show('l lists the refs', await until('the list', (f) => /\d+ refs · type to filter/.test(f) && f.includes('textbox "New todo"')));
+  await mockInput.typeText('hello');
+  show('typing filters the list', await until('the filtered list', (f) => /1 of \d+ refs match "hello"/.test(f) && f.includes('button "Say hello"')));
+  mockInput.pressEnter();
+  show('Enter opens it', await until('the click', (f) => f.includes('Hello said 1') && !f.includes('refs match')));
+  // A click on "N refs" in the top bar pulls the list down too; Esc closes it.
+  const bar = setup.captureCharFrame().split('\n')[0];
+  await mockMouse.click(bar.indexOf(' refs') - 1, 0);
+  await until('the list from a click', (f) => /\d+ refs · type to filter/.test(f));
+  mockInput.pressEscape();
+  await Bun.sleep(100);
+  await until('the list to close', (f) => !/refs · type to filter/.test(f));
+  console.log('\na click on "N refs" in the top bar opened the list; Esc closed it');
+
   mockInput.pressKey(':');
   await mockInput.typeText('scroll bottom');
   mockInput.pressEnter();
@@ -225,7 +241,10 @@ try {
   await bare.mockInput.typeText('q');
   bare.mockInput.pressEnter();
   show('q, Enter: refused', await waitFor(bare, 'the refusal', (f) => f.includes("isn't a web address")));
-  console.log(`session started: ${readSessionInfo(EMPTY) ? 'yes (bad)' : 'no'}`);
+  // The browser starts in the background while the address is typed, but a q opens nothing.
+  await prewarm(EMPTY, {});
+  const blank = await send(EMPTY, { cmd: 'status', client: 'test' }).catch((e: Error) => e.message);
+  console.log(`the browser started ahead: ${readSessionInfo(EMPTY) ? 'yes' : 'no (bad)'}; q opened ${blank.includes('about:blank') ? 'nothing' : `something (bad): ${blank}`}`);
 
   // Words that aren't an address are a search (here MEDLEY_SEARCH points at a local page).
   bare.mockInput.pressBackspace();

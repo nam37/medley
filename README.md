@@ -51,6 +51,12 @@ add an alias, such as `alias medley="bun /path/to/medley/src/cli.ts"` in bash
 or zsh, or `function medley { bun C:\path\to\medley\src\cli.ts @args }` in
 PowerShell.
 
+A command takes as long as the page does to load and settle, plus Bun's own
+start (a few hundred milliseconds). The first command also starts the browser,
+which takes a second or two; the terminal UI starts it while you type the first
+address. If Bun came from npm, its launcher adds to every start; Bun's own
+installer ([bun.sh](https://bun.sh)) doesn't have one.
+
 ## Terminal UI
 
 ```
@@ -82,6 +88,7 @@ sweeps across the `medley` badge and the status line says what's happening.
 | Keys | |
 |---|---|
 | Tab, Shift+Tab | select the next or previous ref; the status line shows where a link goes |
+| l, or a click on "N refs" | pull down a list of the page's refs, with where each link goes: type to filter, ↑ ↓ to choose, Enter (or a click) opens |
 | Enter, or a mouse click | open the ref: links and buttons are clicked; text fields, selects and file fields ask for input |
 | 0-9, then Enter | open a ref by its number |
 | h | hover over the selected ref (menus that open on hover) |
@@ -246,10 +253,14 @@ After an action you get one of:
   `type` focuses the field, selects its text and inserts the new text, so
   frameworks see ordinary input events.
 - **Settling:** after each action it waits for any navigation, then for the
-  network and the DOM to go quiet, before taking the next snapshot. A page
-  that moves on later by itself (a redirect after a browser check, a meta
-  refresh) is announced on the event stream once it settles; the next
-  command reports it as a new page.
+  network and the DOM to go quiet, before taking the next snapshot. Requests
+  that can't change the text (images, media, fonts, pings, prefetches) and
+  ones open for over 3 seconds (long polls, streams) aren't waited for, nor are
+  the pages of frames (they're waited for when read). A page that moves on
+  later by itself (a redirect after a browser check, a meta refresh) is
+  announced on the event stream once it settles; the next command reports it
+  as a new page. The session log has a line per command with where its time
+  went: `goto https://news.ycombinator.com 1992ms (action 1440 · settle 511 · read 39)`.
 - **Uploads** set a file field's files directly, as picking them in its
   dialog would, and the page gets its usual `change` event. Paths are resolved
   by the client (the CLI, the terminal UI or the MCP server) against its own
@@ -281,7 +292,7 @@ terminal cells, for looking at the grid modes without a terminal.
 `bun run test:tui` drives the terminal UI through OpenTUI's test renderer
 against a real session on `test/app.html`: keys, a field prompt, a simulated
 agent acting in the same session, reload, a file prompt, the working badge,
-a masked password prompt, a download, bookmarks and history, find, a command,
+a masked password prompt, a download, bookmarks and history, the refs list, find, a command,
 a mouse click, back, a `confirm()`, a page that moves on by itself, the help
 overlay, and a search from the address prompt. It prints each frame as it goes.
 `bun run test:idle` starts a session that stops after 3 idle seconds and

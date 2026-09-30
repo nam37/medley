@@ -131,7 +131,7 @@
 
     /* the terminal with its grid modes */
     .term { border: 2px solid var(--ink); border-radius: 14px; background: var(--term); padding: 10px; }
-    .term .screen { position: relative; aspect-ratio: 1726 / 1014; overflow: hidden; border-radius: 4px; }
+    .term .screen { position: relative; aspect-ratio: 1716 / 1018; overflow: hidden; border-radius: 4px; }
     .term .screen img { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; transition: opacity 0.25s ease; }
     .term .screen img.on { opacity: 1; }
     @media (prefers-reduced-motion: reduce) { .term .screen img { transition: none; } }
@@ -158,6 +158,24 @@
     .copy:hover { background: var(--green); border-color: var(--green); color: var(--paper); }
     .needs { margin: 0 0 20px; padding-left: 1.1em; color: var(--ink-2); }
     .needs li { margin: 4px 0; }
+
+    /* pictures that open full size (see the lightbox below) */
+    button.zoom { display: block; position: relative; width: 100%; margin: 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: inherit; cursor: zoom-in; }
+    button.zoom::after { content: "enlarge"; position: absolute; right: 8px; bottom: 8px; font: 500 12px/1 var(--mono); color: var(--paper); background: var(--green); padding: 6px 9px; border-radius: 6px; opacity: 0; transition: opacity 0.15s ease; pointer-events: none; }
+    button.zoom:hover::after, button.zoom:focus-visible::after { opacity: 1; }
+    .lightbox { padding: 0; border: 2px solid var(--ink); border-radius: 14px; background: var(--term); color: #d8dee9; max-width: 96vw; max-height: 94vh; overflow: hidden; }
+    .lightbox::backdrop { background: rgba(31, 42, 51, 0.78); }
+    .lightbox figure { margin: 0; display: flex; flex-direction: column; }
+    .lightbox img { display: block; width: auto; height: auto; max-width: calc(96vw - 4px); max-height: calc(94vh - 70px); margin: 0 auto; }
+    .lightbox figcaption { display: flex; gap: 16px; align-items: center; justify-content: space-between; padding: 10px 14px; font: 400 14px/1.45 var(--mono); background: #262b33; border-top: 1px solid rgba(255, 255, 255, 0.12); }
+    .lightbox .nav { display: flex; gap: 8px; align-items: center; flex: none; }
+    .lightbox .nav[hidden] { display: none; }
+    .lightbox button { font: 500 14px/1 var(--mono); color: #d8dee9; background: none; border: 1px solid rgba(255, 255, 255, 0.3); border-radius: 6px; padding: 7px 10px; cursor: pointer; }
+    .lightbox button:hover { color: #fff; border-color: #9fd9c4; }
+    @media (prefers-reduced-motion: no-preference) {
+      .lightbox[open] { animation: lightbox-in 0.18s ease-out; }
+      @keyframes lightbox-in { from { opacity: 0; transform: scale(0.98); } }
+    }
 
     footer.bottom { margin-top: 72px; border-top: 2px solid var(--ink); padding: 26px 0 48px; font: 400 14px/1.7 var(--mono); color: var(--ink-2); }
     footer.bottom .wrap { display: flex; flex-wrap: wrap; gap: 8px 28px; align-items: center; }
@@ -210,17 +228,17 @@
         <p class="prose">A background session owns the browser. The terminal UI, the command line and every MCP connection are clients of that one session, so you see what the agent does as it happens, with its cursor on what it's working on. Press <kbd>&gt;</kbd> to tell it something. When it needs you, for a sign-in, a choice, or a yes before it buys anything, it asks and waits for your answer, and a <code>confirm()</code> on the page waits for you too.</p>
         <div class="steps">
           <div class="step">
-            <div class="shot"><img src="assets/tui-agent-typed.png" alt="medley's terminal UI on the demo page's form; the status line says, in purple, agent: typed into [12 textbox Email]." width="1716" height="1018" loading="lazy"></div>
+            <button class="shot zoom" type="button" data-group="steps" aria-label="Enlarge: the agent filling the form"><img src="assets/tui-agent-typed.png" alt="medley's terminal UI on the demo page's form; the status line says, in purple, agent: typed into [12 textbox Email]." width="1716" height="1018" loading="lazy"></button>
             <h3>The agent fills the form</h3>
             <p><span class="who agent">agent</span> <code>type 12 sam@example.com</code>. Your terminal UI follows along and marks the line that changed.</p>
           </div>
           <div class="step">
-            <div class="shot"><img src="assets/tui-confirm.png" alt="The status line reads: the page asks (confirm): Send trail notes to sam@example.com? with the hint y accept, n dismiss." width="1716" height="1018" loading="lazy"></div>
+            <button class="shot zoom" type="button" data-group="steps" aria-label="Enlarge: the page asking to confirm"><img src="assets/tui-confirm.png" alt="The status line reads: the page asks (confirm): Send trail notes to sam@example.com? with the hint y accept, n dismiss." width="1716" height="1018" loading="lazy"></button>
             <h3>The page asks to confirm</h3>
             <p><span class="who agent">agent</span> <code>click 14</code> opens a <code>confirm()</code>. The page is blocked until someone answers it.</p>
           </div>
           <div class="step">
-            <div class="shot"><img src="assets/tui-accepted.png" alt="After pressing y: accepted the confirm, and the page now shows Thanks! Notes will go to sam@example.com." width="1716" height="1018" loading="lazy"></div>
+            <button class="shot zoom" type="button" data-group="steps" aria-label="Enlarge: your answer"><img src="assets/tui-accepted.png" alt="After pressing y: accepted the confirm, and the page now shows Thanks! Notes will go to sam@example.com." width="1716" height="1018" loading="lazy"></button>
             <h3>You answer it</h3>
             <p><span class="who you">you</span> press <kbd>y</kbd> in the terminal UI (or run <code>dialog accept</code>), and the page carries on.</p>
           </div>
@@ -241,7 +259,7 @@
         <div class="pair">
           <div class="pane">
             <div class="bar"><span>The page</span><a href="demo/">nam37.github.io/medley/demo/</a></div>
-            <img src="assets/demo-page.png" alt="The Fernway Outfitters demo shop: a green top bar with Gear, Trails and a Menu button, a hero with mountains and the headline Pack light. Go far., and three product cards." width="1440" height="900" loading="lazy">
+            <button class="zoom" type="button" aria-label="Enlarge the demo page"><img src="assets/demo-page.png" alt="The Fernway Outfitters demo shop: a green top bar with Gear, Trails and a Menu button, a hero with mountains and the headline Pack light. Go far., and three product cards." width="1440" height="900" loading="lazy"></button>
           </div>
           <div class="pane">
             <div class="bar"><span>What medley prints</span><span>19 refs</span></div>
@@ -336,11 +354,11 @@ Fernway Outfitters is a made-up shop: a page for trying <span class="ref">[19]</
         <h2>Browse it yourself, with the page's own layout.</h2>
         <p class="prose">A full-screen terminal UI for people: Tab through refs, Enter to open, <kbd>/</kbd> to find, <kbd>[</kbd> <kbd>]</kbd> for tabs. Press <kbd>v</kbd> to cycle how the page is drawn. The text, the refs and the keys stay the same in every mode.</p>
         <div class="term">
-          <div class="screen" id="screen">
+          <button class="screen zoom" type="button" id="screen" aria-label="Enlarge the terminal">
             <img class="on" data-mode="none" src="assets/tui-none.png" alt="No grid: the page as medley's plain text, with colored refs." width="1716" height="1018">
             <img data-mode="partial" src="assets/tui-partial.png" alt="Partial grid: the three product cards side by side in columns, and the trail table beside its tip." width="1716" height="1018" loading="lazy">
-            <img data-mode="advanced" src="assets/tui-advanced.png" alt="Advanced grid: the page as laid out, with its green top bar and the mountain picture drawn in half-block characters." width="1716" height="1018" loading="lazy">
-          </div>
+            <img data-mode="advanced" src="assets/tui-advanced.png" alt="Advanced grid: the page as laid out, with its green top bar and the mountain picture drawn in block characters." width="1716" height="1018" loading="lazy">
+          </button>
         </div>
         <div class="modes" role="group" aria-label="Grid mode">
           <button type="button" data-mode="none" aria-pressed="true">no grid</button>
@@ -398,13 +416,30 @@ Fernway Outfitters is a made-up shop: a page for trying <span class="ref">[19]</
     </div>
   </footer>
 
+  <dialog class="lightbox" id="lightbox" aria-label="The picture, full size">
+    <figure>
+      <img id="lightbox-img" alt="">
+      <figcaption>
+        <span id="lightbox-caption"></span>
+        <span class="nav">
+          <span class="nav" id="lightbox-steps">
+            <button type="button" id="lightbox-prev" aria-label="Previous">←</button>
+            <span id="lightbox-count"></span>
+            <button type="button" id="lightbox-next" aria-label="Next">→</button>
+          </span>
+          <button type="button" id="lightbox-close" autofocus>close</button>
+        </span>
+      </figcaption>
+    </figure>
+  </dialog>
+
   <script>
     // Grid modes: the buttons, or v, cycle the terminal's screen.
     const modes = ['none', 'partial', 'advanced'];
     const notes = {
       none: 'No grid: the text exactly as an agent gets it, with refs in color and links underlined.',
       partial: "Partial grid: blocks that sit side by side on the page become columns, like the product cards here, when each column gets at least 20 characters.",
-      advanced: "Advanced grid: the page as laid out, scaled to the terminal, in the page's own colors, with its pictures drawn in half-block characters.",
+      advanced: "Advanced grid: the page as laid out, scaled to the terminal, in the page's own colors, with its pictures in real pixels where the terminal can draw them (Sixel, Kitty) and in block characters where it can't, as here.",
     };
     let current = 'none';
     function show(mode) {
@@ -417,7 +452,59 @@ Fernway Outfitters is a made-up shop: a page for trying <span class="ref">[19]</
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'v' || e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.target.closest && e.target.closest('input, textarea, select, [contenteditable]')) return;
+      if (box.open) return items[0] && items[0].mode ? step(1) : undefined;
       show(modes[(modes.indexOf(current) + 1) % modes.length]);
+    });
+
+    // Pictures open full size over the page: the three steps in turn, or the
+    // terminal in each grid mode (← →, or v). Esc, close, or a click outside closes.
+    const box = document.getElementById('lightbox');
+    const boxImg = document.getElementById('lightbox-img');
+    let items = [];
+    let at = 0;
+    function itemsFor(button) {
+      if (button.id === 'screen') {
+        return modes.map((mode) => {
+          const img = button.querySelector(`img[data-mode="${mode}"]`);
+          return { src: img.currentSrc || img.src, alt: img.alt, caption: notes[mode], mode };
+        });
+      }
+      const group = button.dataset.group;
+      const buttons = group ? [...document.querySelectorAll(`.zoom[data-group="${group}"]`)] : [button];
+      return buttons.map((b, i) => {
+        const img = b.querySelector('img');
+        const step = b.closest('.step');
+        const caption = step ? `${i + 1}. ${step.querySelector('h3').textContent}: ${step.querySelector('p').textContent}` : img.alt;
+        return { src: img.currentSrc || img.src, alt: img.alt, caption };
+      });
+    }
+    function openAt(i) {
+      at = (i + items.length) % items.length;
+      const item = items[at];
+      boxImg.src = item.src;
+      boxImg.alt = item.alt;
+      document.getElementById('lightbox-caption').textContent = item.caption;
+      document.getElementById('lightbox-count').textContent = `${at + 1}/${items.length}`;
+      document.getElementById('lightbox-steps').hidden = items.length < 2;
+      if (item.mode) show(item.mode); // the page's terminal follows along
+      if (!box.open) box.showModal();
+    }
+    const step = (by) => openAt(at + by);
+    document.querySelectorAll('button.zoom').forEach((b) =>
+      b.addEventListener('click', () => {
+        items = itemsFor(b);
+        openAt(b.id === 'screen' ? modes.indexOf(current) : items.findIndex((it) => it.src === (b.querySelector('img').currentSrc || b.querySelector('img').src)));
+      }),
+    );
+    document.getElementById('lightbox-prev').addEventListener('click', () => step(-1));
+    document.getElementById('lightbox-next').addEventListener('click', () => step(1));
+    document.getElementById('lightbox-close').addEventListener('click', () => box.close());
+    box.addEventListener('click', (e) => {
+      if (e.target === box) box.close(); // the backdrop
+    });
+    box.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight') step(1);
+      else if (e.key === 'ArrowLeft') step(-1);
     });
 
     // Copy buttons.

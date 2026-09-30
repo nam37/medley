@@ -222,7 +222,7 @@ try {
   check('recorded: the checks as steps, elements by kind and name, the password as ${PASSWORD}', out.endsWith(steps.join('\n')) && !out.includes('hunter2'), out);
   r = await run(OTHER, ['replay', script], { PASSWORD: 'hunter2' });
   check('replayed in a fresh session: every step passes', r.status === 0 && (r.out.match(/^✓ /gm) ?? []).length === 7, r.out);
-  r = await run(OTHER, ['replay', script], { PASSWORD: 'wrong' });
+  r = await run(OTHER, ['replay', script, '--no-bundle'], { PASSWORD: 'wrong' });
   check('with the wrong password, the check of it fails and stops the replay', r.status === 1 && r.out.includes('✗ 4 expect --value') && r.out.includes('holds something else') && !r.out.includes('hunter2'), r.out);
   const test = (await run(NAME, ['playwright', script])).out;
   const has = (line: string) => test.includes(line);

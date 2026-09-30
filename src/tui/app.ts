@@ -84,7 +84,7 @@ type Tone = 'info' | 'ok' | 'warn' | 'error' | 'agent';
 const TONE = { info: THEME.text, ok: THEME.ok, warn: THEME.warn, error: THEME.error, agent: THEME.agent };
 
 // Commands whose result is a report to read, shown in a box: what the box is called.
-const REPORTS: Record<string, string> = { audit: 'accessibility', console: 'console', network: 'network', extract: 'data', record: 'the script', expect: 'checks', inspect: 'the element' };
+const REPORTS: Record<string, string> = { audit: 'accessibility', console: 'console', network: 'network', extract: 'data', record: 'the script', expect: 'checks', inspect: 'the element', bundle: 'saved' };
 
 const HINTS = 'Tab select · Enter open · l refs · o address · ← back · / find · v grid · ? keys · q quit';
 const BADGE = ' medley ';
@@ -109,6 +109,7 @@ const HELP = [
   ':                  run a command: press Escape, wait 2, select 6 High, …',
   "                   audit checks accessibility; console, network: the page's errors;",
   '                   inspect looks closely at the selected ref: its styles, rules, listeners;',
+  '                   bundle saves the page as it is to a folder, for a bug report;',
   '                   record start … record stop writes down what you do, to replay;',
   '                   expect Thanks, expect --url /cart --no-errors: checks, kept in the script',
   'l, or click N refs  the page’s refs in a list: type to filter, Enter opens',
@@ -496,7 +497,7 @@ export class App {
 
   /** Another client did something: say so, and look at the page again. */
   private onOther(e: SessionEvent) {
-    const looking = ['snapshot', 'status', 'screenshot', 'pictures', 'tabs', 'info', 'source', 'find', 'console', 'network', 'extract', 'audit', 'expect', 'inspect'];
+    const looking = ['snapshot', 'status', 'screenshot', 'pictures', 'tabs', 'info', 'source', 'find', 'console', 'network', 'extract', 'audit', 'expect', 'inspect', 'bundle'];
     if (looking.includes(e.cmd) || e.starting) return;
     if (e.summary.startsWith('listed the ')) return; // history, downloads: nothing on the page changed
     const who = e.client.startsWith('mcp') ? 'agent' : e.client;
@@ -1530,6 +1531,8 @@ export class App {
         return 'checking the page for accessibility';
       case 'inspect':
         return `looking closely at ${label}`;
+      case 'bundle':
+        return 'saving the page as it is';
       case 'expect':
         return `checking for ${(Array.isArray(args.checks) ? (args.checks as Check[]) : []).map(checkName).join(', ')}`;
       case 'stop':

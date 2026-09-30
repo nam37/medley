@@ -33,6 +33,7 @@ export interface CommandFlags {
   checks?: [string, string][]; // expect's other checks, in order: ['url', '/cart'], ['checked', 'checkbox Agree']
   shot?: string; // inspect <ref> --shot <file>
   css?: string; // inspect <ref> --css gap,grid-template-columns
+  note?: string; // bundle [dir] --note "what I was doing"
 }
 
 const FLAGS = new Set(['--links', '--diff', '--submit', '--hard', '--outline', '--full', '--new-tab', '--dom', '--reader', '--all', '--csv', '--json']);
@@ -43,6 +44,8 @@ const EXPECT_FLAGS = new Set(['--no-errors']);
 const EXPECT_VALUE_FLAGS = new Set(['--count', '--within']);
 // inspect's: a file for a picture of the element, and more CSS properties to read.
 const INSPECT_VALUE_FLAGS = new Set(['--shot', '--css']);
+// bundle's: a note to keep with what it saves.
+const BUNDLE_VALUE_FLAGS = new Set(['--note']);
 const NONE = new Set<string>();
 /** expect's checks that take a value, and may come several times: --url /cart --checked "checkbox Agree". */
 export const CHECK_FLAGS = new Set(['--url', '--title', '--value', ...STATES.map((s) => `--${s}`)]);
@@ -108,7 +111,7 @@ export function splitFlags(words: (string | Word)[]): { words: string[]; flags: 
   const key = (w: string) => w.slice(2).replace(/-(\w)/g, (_, c: string) => c.toUpperCase()); // --new-tab → newTab
   const list = words.map((w) => (typeof w === 'string' ? { text: w, quoted: '' } : w));
   const expecting = list[0]?.text === 'expect';
-  const own = expecting ? EXPECT_VALUE_FLAGS : list[0]?.text === 'inspect' ? INSPECT_VALUE_FLAGS : NONE;
+  const own = expecting ? EXPECT_VALUE_FLAGS : list[0]?.text === 'inspect' ? INSPECT_VALUE_FLAGS : list[0]?.text === 'bundle' ? BUNDLE_VALUE_FLAGS : NONE;
   const checks: [string, string][] = [];
   for (let i = 0; i < list.length; i++) {
     const { text, quoted } = list[i];
@@ -233,6 +236,9 @@ export function parseCommand([command, ...rest]: string[], flags: CommandFlags =
       // The picture is saved by whoever asked, where they are (the session may run elsewhere).
       return { cmd: 'inspect', args: { ref: rest.join(' '), json: flags.json, shot: flags.shot !== undefined, path: flags.shot, css } };
     }
+    case 'bundle':
+      // The folder is made by the session, which may run elsewhere: its path is settled here.
+      return { cmd: 'bundle', args: { dir: rest[0] ? resolve(rest[0]) : undefined, note: flags.note } };
     case 'record': {
       const action = rest[0] ?? 'status';
       if (action === 'start') return { cmd: 'record', args: { action, file: rest[1] ? resolve(rest[1]) : undefined } };

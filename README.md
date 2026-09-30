@@ -197,6 +197,8 @@ medley expect --no-errors           check the page logged no errors and none of 
                                     (several in one expect: all must be so; --within <seconds> waits longer)
 medley record start [file]          write down what's done in the session, as a script
 medley record stop | status         stop and print the script, or say how far it's got
+medley bundle [dir] [--note <text>] save the page as it is to a folder: its text, a picture, its HTML,
+                                    what it logged and asked for, and a README.md saying what's there
 medley info [--json]                page info: connection and certificate, cookies and site data, about the page, loading
 medley clear-site-data              delete the page's site's cookies and stored data (signs you out there)
 medley source [--dom]               the page's HTML as the server sent it (--dom: as it is now)
@@ -205,7 +207,8 @@ medley tell <message>               tell the person watching what you're doing
 medley dialog accept [text] | dismiss
 medley status | stop
 
-medley replay <script> [--verbose]  do a script's steps again, stopping at the first that fails
+medley replay <script> [--verbose]  do a script's steps again, stopping at the first that fails; what the
+                                    page was then is saved as a bundle (--bundle <dir>, or --no-bundle)
 medley playwright <script>          print a script as a Playwright test
 medley watch [dir] [--hot]          reload the page when files change, and say how its text changed
 medley tui [url]                    the terminal UI, sharing the session
@@ -286,7 +289,8 @@ Some things are there to keep an agent's context small and its steps sure:
 
 Scripts and checks for web work are there too: `browser_record` and
 `browser_replay` (see Scripts, below), `browser_audit`, `browser_reload` with
-`diff`, `browser_inspect`, which looks closely at one element (why it can't be
+`diff`, `browser_bundle`, which saves the page as it is to a folder for a bug
+report, `browser_inspect`, which looks closely at one element (why it can't be
 clicked, which CSS rule colors it and where that rule is, which script hears a
 click on it), and `browser_expect`, which tells an agent in one call whether
 its change worked: some text is there or gone, the address, what fields hold,
@@ -355,6 +359,11 @@ expect Thanks
   tokens (signing in, filling in a form), or a check that a site still works.
   A name that isn't on the page yet is looked for again for a few seconds,
   since pages often draw a moment after they load.
+- **A failure is kept.** When a step fails, replay saves what the page was at
+  that moment as a bundle (see Building a site, below), with the step, what
+  went wrong, the steps that led there and the script, and says where: a
+  folder to look into after the page has moved on, or to hand to whoever
+  fixes it. `--bundle <dir>` names the folder; `--no-bundle` saves nothing.
 - **Checks:** an `expect` (see Building a site, below) fails when what it
   asks isn't so within 5 seconds. Recorded, it's a step like any other, and
   it's what makes replaying a script a test: `expect --url /cart/done
@@ -435,6 +444,44 @@ expect Thanks
   - A password's value is never shown, in the report or in the markup. The
     rules and listeners come from the browser's own debugger and CSS tools,
     which are on only for the moment it takes to read them.
+- **`bundle`** (MCP `browser_bundle`) saves the page as it is to a folder, to
+  look into later or to hand to someone else, or to an agent: a bug report
+  with the evidence in it. A replay that fails makes one by itself.
+
+  ```
+  $ medley replay order.medley
+  ✓ 1 goto http://localhost:3000/shop (0.8s)
+  ✓ 2 click button Add to cart · clicked [3 button "Add to cart"] · +1 -1 lines (0.4s)
+  ✓ 3 click button Place order · clicked [6 button "Place order"] (0.5s)
+      note: the page logged 1 error: checkout broke: no card (console shows them)
+  ✗ 4 expect Order placed (5.1s)
+      expected "Order placed" on the page, but it isn't there (after 5s; the page is "Trail shop", http://localhost:3000/shop)
+  replay of order.medley stopped at step 4 of 5 (line 5)
+  saved what the page was when the step failed to ~/.medley/bundles/2026-09-30-14-03-22-order: its README.md says what failed, …
+  ```
+
+  | In the folder | |
+  |---|---|
+  | `README.md` | what failed and where in the script, the steps done and not run, the errors the page logged and its requests that failed, and what each file is |
+  | `page.txt` | the page as medley shows it: its text, with every control numbered and every link's address |
+  | `screenshot.png`, `page.png` | the window as it looked, and the whole page when that's taller |
+  | `page.html` | the page's HTML as it was, after its scripts ran |
+  | `console.txt`, `network.txt` | everything the page logged, and every request it made |
+  | `steps.medley` | the script: `medley replay steps.medley` fails the same way again |
+  | `bundle.json` | what failed and what the page logged, as data |
+
+  - `medley bundle [dir] --note "the cart shows shoes, but the order fails"`
+    saves one of the page as it is now, with the note in its README.
+  - Without a folder named, bundles go to `~/.medley/bundles/<when>-<name>`,
+    where the newest 30 are kept: older ones medley put there are removed as
+    new ones come. A folder you name is yours, and never touched.
+  - A page that can't answer (stuck in a script, or behind a `confirm()`)
+    still gives what medley has of it: its console and requests, and its text
+    as it was last read. The README says what's missing, and why.
+  - What's typed into a password is masked in the page's text, and a script's
+    secrets stay `${PASSWORD}`. Everything else the page showed is in there,
+    field values and the addresses it asked for included: look through a
+    bundle before passing it on.
 - **`expect`** (MCP `browser_expect`) says whether a change worked, so nobody
   has to read the page again and judge. It waits up to 5 seconds (`--within
   <seconds>` for longer) for what it's asked to be so, and fails, with exit
@@ -655,7 +702,7 @@ agent acting in the same session, reload, a file prompt, the working badge,
 a masked password prompt, a download, bookmarks and history, the refs list, find, a command,
 a mouse click, back, a `confirm()`, a page that moves on by itself, the picture
 viewer, page info, the source view, recording a script (the `● rec`
-badge, the script's box), `:audit`, `:inspect`, `:expect`, the help overlay, and a search from the
+badge, the script's box), `:audit`, `:inspect`, `:bundle`, `:expect`, the help overlay, and a search from the
 address prompt. It prints each frame as it goes.
 `bun run test:stability` checks medley's word when things go wrong, against
 pages served for it: typing into comboboxes that won't take the focus or open
@@ -682,6 +729,12 @@ files and lines, a media query, an invalid declaration, inherited ones) and
 the listeners (on it, around it, inline ones), in a shadow root and in frames
 from this site and another, a password kept out, then the picture from the
 command line and over MCP.
+`bun run test:bundle` checks bundles: a replay that fails leaves a folder
+with each file, a README that says what failed, the steps and the page's
+errors, pictures of the right size, and a script that fails the same way
+again; a password typed isn't in any of it; a page behind a dialog or stuck in
+a script still gives its console, its requests and its last-read text; only
+medley's own oldest bundles are removed; `bundle` by itself, and both over MCP.
 `bun run test:dev` checks what developers lean on: `audit` against
 `test/a11y.html` (one of each problem, beside the same things done right),
 `expect`, recording the demo shop's form and replaying it in a fresh session,

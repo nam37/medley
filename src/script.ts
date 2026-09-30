@@ -376,6 +376,42 @@ export function stepLines(r: StepResult, n: number, { verbose = false } = {}): s
   return out;
 }
 
+/**
+ * Save what the page was when a replay's step failed (a bundle: see
+ * bundle.ts), with the step, what went wrong and the steps before it, to
+ * `dir` or a folder of medley's own. Returns what to say of it: where it
+ * went, or why it couldn't be saved; '' when nothing failed.
+ */
+export async function bundleFailure(
+  session: string,
+  client: string,
+  steps: ScriptStep[],
+  results: StepResult[],
+  script: { name: string; text: string },
+  dir?: string,
+): Promise<string> {
+  const last = results.at(-1);
+  if (!last || last.ok) return '';
+  const failure = {
+    script: script.name,
+    scriptText: script.text,
+    step: results.length,
+    total: steps.length,
+    line: last.step.line,
+    command: last.step.text,
+    error: last.text,
+    log: results.flatMap((r, i) => stepLines(r, i + 1)),
+    rest: steps.slice(results.length).map((s) => s.text),
+    vars: scriptVars(steps),
+  };
+  try {
+    const { text } = await request(session, { cmd: 'bundle', args: { dir, failure }, client });
+    return `${text.split('\n')[0]}: its README.md says what failed, beside the page's text, a picture of it, and what it logged`;
+  } catch (e) {
+    return `what the page was couldn't be saved: ${(e as Error).message.split('\n')[0]}`;
+  }
+}
+
 /** How a replay went, in a line. */
 export function replaySummary(results: StepResult[], total: number, name: string): string {
   const last = results.at(-1);

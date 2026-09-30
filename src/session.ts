@@ -6,7 +6,8 @@ import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditText, type AuditResult } from './audit.ts';
-import { Browser, NoAnswer, sleep, type Dialog, type DownloadEvent, type LaunchOptions, type Page, type RequestEntry } from './browser.ts';
+import { Browser, NoAnswer, sleep, type ConsoleEntry, type Dialog, type DownloadEvent, type LaunchOptions, type Page, type RequestEntry } from './browser.ts';
+import type { Evidence } from './bundle.ts';
 import { countOf, meansOn, type Check, type State } from './checks.ts';
 import { diffLines, fencedLines, whereIs } from './diff.ts';
 import { inspectText, type Found, type Inspection } from './inspect.ts';
@@ -306,6 +307,10 @@ const requestFailed = (r: RequestEntry) => (r.status !== undefined && r.status >
 
 /** How a request went wrong: its error status, or why it got none. */
 const failure = (r: RequestEntry) => (r.failed && r.failed !== 'canceled' ? r.failed : String(r.status ?? r.failed ?? '…'));
+
+/** A console message, and a request, as `console` and `network` list them. */
+const consoleLine = (e: ConsoleEntry) => `${e.level.padEnd(7)}  ${e.text}${e.where ? `  · ${shortWhere(e.where)}` : ''}`;
+const requestLine = (r: RequestEntry) => `${failure(r).padEnd(4)}  ${r.method} ${r.url.length > 160 ? r.url.slice(0, 159) + '…' : r.url}  (${r.type})`;
 
 // How long a check waits for the page to answer; a stuck page gets no more than this per look.
 const PROBE_MS = 2000;
@@ -949,6 +954,7 @@ export class Session {
   async pictures({ scale = 0.5, png = false, quality = 70 } = {}): Promise<Screenshot> {
     if (this.dialog) throw new Error(this.dialogText());
     await this.ensureTab();
+    await this.toFront();
     // Pictures the browser loads only when scrolled near (loading="lazy", most
     // of a news page's) would come out as empty boxes: load them now, waiting
     // up to 4 seconds.
@@ -1002,6 +1008,7 @@ export class Session {
   async screenshot({ full = false } = {}): Promise<{ png: string; width: number; height: number; url: string }> {
     if (this.dialog) throw new Error(this.dialogText());
     await this.ensureTab();
+    await this.toFront();
     let width = this.page.width;
     let height = this.page.height;
     let options = {};
@@ -1145,7 +1152,7 @@ export class Session {
     const errors = entries.filter((e) => e.level === 'error').length;
     const warnings = entries.filter((e) => e.level === 'warning').length;
     const head = `console: ${plural(errors, 'error')}, ${plural(warnings, 'warning')} (${plural(entries.length, 'message')} since the page loaded)`;
-    const lines = shown.slice(-100).map((e) => `${e.level.padEnd(7)}  ${e.text}${e.where ? `  · ${shortWhere(e.where)}` : ''}`);
+    const lines = shown.slice(-100).map(consoleLine);
     const more = shown.length > 100 ? [`… ${shown.length - 100} earlier ones left out`] : [];
     const hint = !all && entries.length > shown.length ? ['(--all for every message)'] : [];
     return [head, ...more, ...lines, ...hint].join('\n');
@@ -1165,10 +1172,7 @@ export class Session {
     const failed = requests.filter(requestFailed);
     const shown = all ? requests : failed;
     const head = `network: ${plural(requests.length, 'request')}, ${failed.length} failed`;
-    const lines = shown.slice(-200).map((r) => {
-      const how = failure(r);
-      return `${how.padEnd(4)}  ${r.method} ${r.url.length > 160 ? r.url.slice(0, 159) + '…' : r.url}  (${r.type})`;
-    });
+    const lines = shown.slice(-200).map(requestLine);
     const more = shown.length > 200 ? [`… ${shown.length - 200} earlier ones left out`] : [];
     return [head, ...more, ...lines, ...(!all && requests.length ? ['(--all for every request)'] : [])].join('\n');
   }
@@ -1217,6 +1221,93 @@ export class Session {
       return label ? { ...f, ref: global(ref!), label } : f;
     });
     return JSON.stringify({ ...result, findings }, null, 1);
+  }
+
+  // ---- the page, for keeping --------------------------------------------------------------
+
+  /**
+   * What the page is right now, for a bundle (see bundle.ts): its text as
+   * snapshots show it, its HTML, a picture of the window (and of the whole
+   * page, when that's taller), and everything it logged and asked for. A
+   * page that isn't answering (stuck in a script, or behind a dialog) still
+   * gives what medley already has of it (its text as `client` last saw it,
+   * its console and requests); what couldn't be had is named, with why. No
+   * client's view of the page changes.
+   */
+  async evidence(client = ''): Promise<Evidence> {
+    await this.ensureTab();
+    const page = this.page;
+    const missing: string[] = [];
+    const e: Evidence = {
+      at: new Date().toISOString(),
+      url: page.document?.url ?? '',
+      title: '',
+      window: { w: page.width, h: page.height },
+      tabs: `tab ${this.tabs.indexOf(page) + 1} of ${this.tabs.length}`,
+      console: '',
+      network: '',
+      messages: 0,
+      requests: 0,
+      errors: [],
+      warnings: 0,
+      failed: [],
+      missing,
+    };
+    const tried = async <T>(what: string, get: () => Promise<T>): Promise<T | undefined> => {
+      try {
+        return await get();
+      } catch (err) {
+        missing.push(`${what}: ${(err as Error).message.split('\n')[0]}`);
+        return undefined;
+      }
+    };
+    // A page that can't be read now: its text as it was last read, if that was this document.
+    const lastSeen = (why: string) => {
+      const seen = this.baselines.get(client);
+      const same = seen && seen.url.split('#')[0] === e.url.split('#')[0];
+      if (same) {
+        e.title = seen.title;
+        e.page = fullText(seen, true);
+      }
+      missing.push(`the page's HTML and picture${same ? ', and its text as it is now (page.txt is the page as it was last read, before this)' : ' and text'}: ${why}`);
+    };
+    if (this.dialog) {
+      e.dialog = `${this.dialog.type} "${this.dialog.message}"`;
+      lastSeen("a dialog is open on it, and it shows nothing new until that's answered");
+    } else if (!(await page.responsive(3000))) {
+      lastSeen(STUCK);
+    } else {
+      await this.hearConsole().catch(() => {});
+      const snap = await tried("the page's text", () => this.capture());
+      if (snap) {
+        e.url = snap.url;
+        e.title = snap.title;
+        e.page = fullText(snap, true);
+      }
+      e.html = await tried("the page's HTML", () =>
+        page.evaluate<string>(`(document.doctype ? '<!DOCTYPE ' + document.doctype.name + '>\\n' : '') + document.documentElement.outerHTML`, 10_000),
+      );
+      await this.toFront();
+      e.screenshot = (await tried('a picture of the window', () => page.send('Page.captureScreenshot', { format: 'png' }, 15_000)))?.data;
+      const size = (await tried("the page's size", () => page.send('Page.getLayoutMetrics', {}, 5000)))?.cssContentSize;
+      if (size && size.height > page.height + 10) {
+        const clip = { x: 0, y: 0, width: Math.ceil(size.width), height: Math.min(Math.ceil(size.height), 16000), scale: 1 };
+        e.whole = (await tried('a picture of the whole page', () => page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip }, 20_000)))?.data;
+      }
+    }
+    const logged = page.console;
+    const requests = [...page.requests.values()];
+    const errors = logged.filter((m) => m.level === 'error');
+    const failed = requests.filter(requestFailed);
+    e.messages = logged.length;
+    e.requests = requests.length;
+    e.errors = errors.map(consoleLine);
+    e.warnings = logged.filter((m) => m.level === 'warning').length;
+    e.failed = failed.map(requestLine);
+    const heard = page.watchingConsole ? '' : " (the page's console wasn't being listened to: only the browser's own messages about it are here)";
+    e.console = [`console: ${plural(errors.length, 'error')}, ${plural(e.warnings, 'warning')}, ${plural(logged.length, 'message')} since the page loaded${heard}`, ...logged.map(consoleLine)].join('\n') + '\n';
+    e.network = [`network: ${plural(requests.length, 'request')}, ${failed.length} failed`, ...requests.map(requestLine)].join('\n') + '\n';
+    return e;
   }
 
   // ---- one element, looked at closely ---------------------------------------------------
@@ -1328,6 +1419,7 @@ export class Session {
       height: Math.min(h + 2 * pad, 2000),
       scale: Math.max(w, h) < 600 ? 2 : 1,
     };
+    await this.toFront();
     const picture = await this.page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip });
     return JSON.stringify({ text, png: picture.data, width: Math.round(clip.width * clip.scale), height: Math.round(clip.height * clip.scale) });
   }
@@ -1464,6 +1556,7 @@ export class Session {
     const page = this.tabs[n - 1];
     if (!page) throw new Error(`there is no tab ${n}; ${this.tabCount()}`);
     this.page = page;
+    await this.toFront();
     return this.report(client, `switched to tab ${n}`);
   }
 
@@ -1928,6 +2021,14 @@ export class Session {
 
   private label(client: string, ref: number): string {
     return this.baselines.get(client)?.labels.get(ref) ?? `[${ref}]`;
+  }
+
+  /**
+   * Make the current tab the one the browser draws: a tab behind another
+   * isn't drawn at all, so a picture of it would wait for good.
+   */
+  private async toFront() {
+    await this.page.send('Page.bringToFront', {}, 5000).catch(() => {});
   }
 
   /** If the last action opened a new tab, carry on in that tab. */

@@ -104,6 +104,14 @@ try {
     await session.closeTab('t');
   }
   check(`five tabs opened and closed: listeners ${before} before, ${listeners()} after`, listeners() === before);
+
+  // A tab behind another isn't drawn: pictures of it come all the same, and soon.
+  await session.newTab('t', url('/form'));
+  await session.switchTab('t', 1);
+  t0 = performance.now();
+  const shots = [await session.screenshot(), await session.screenshot({ full: true }), await session.pictures()];
+  check(`pictures of a tab that was behind another (${seconds(t0).toFixed(1)}s)`, seconds(t0) < 10 && shots.every((s) => ('png' in s ? s.png : s.image).length > 100));
+  await session.closeTab('t', 2);
 } catch (e) {
   check('no errors', false, String((e as Error).stack ?? e));
 } finally {
@@ -159,7 +167,7 @@ try {
       mcp.stdin!.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
     });
   await call(1, 'initialize', {});
-  const replayed = await call(2, 'tools/call', { name: 'browser_replay', arguments: { script: `goto ${url('/form')}\nexpect Nothing like this` } });
+  const replayed = await call(2, 'tools/call', { name: 'browser_replay', arguments: { script: `goto ${url('/form')}\nexpect Nothing like this`, bundle: false } });
   const text = replayed.result?.content?.map((c: { text: string }) => c.text).join('\n') ?? '';
   check('a failed replay over MCP is an error', replayed.result?.isError === true && text.includes('✗ 2 expect'), JSON.stringify(replayed.result));
   mcp.kill();

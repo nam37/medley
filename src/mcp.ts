@@ -3,12 +3,12 @@
 
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { STATES } from './checks.ts';
 import { CommandError, request, type StartOptions } from './client.ts';
 import { searchUrl, toUrl } from './commands.ts';
-import { parseScript, replay, replaySummary, stepLines } from './script.ts';
+import { bundleFailure, parseScript, replay, replaySummary, stepLines } from './script.ts';
 
 const REF = {
   type: ['integer', 'string'],
@@ -59,7 +59,9 @@ browser_record writes down what's done in the session (by you, or your user in
 the terminal UI) as a script of steps that name what they act on; your user can
 replay it without you (medley replay), or you can with browser_replay, for a
 chore done again or a check that a site still works. A browser_expect made
-while recording becomes a check in the script.
+while recording becomes a check in the script. When a replayed step fails, what
+the page was is saved as a bundle (a folder: its text, a picture, its console
+and requests, the steps); browser_bundle saves one of the page as it is now.
 
 Your user may be watching this browser in medley's terminal UI, and can talk to you
 there. What they say comes at the start of a tool result, in its own block that
@@ -280,11 +282,24 @@ const TOOLS: Tool[] = [
     name: 'browser_replay',
     cmd: 'replay',
     description:
-      'Do a recorded script\'s steps again (from `file`, or the `script` text), stopping at the first that fails, and say how each went. Your user can do the same without you: medley replay <file>. `vars` gives values for ${NAME}s in it; otherwise they come from the environment.',
+      'Do a recorded script\'s steps again (from `file`, or the `script` text), stopping at the first that fails, and say how each went. Your user can do the same without you: medley replay <file>. `vars` gives values for ${NAME}s in it; otherwise they come from the environment. When a step fails, what the page was then is saved as a bundle (see browser_bundle), with the step and those before it, and the result says where (in `bundle_dir`, or a folder of medley\'s own; bundle=false saves nothing).',
     inputSchema: {
       type: 'object',
-      properties: { file: { type: 'string' }, script: { type: 'string' }, vars: { type: 'object', additionalProperties: { type: 'string' } } },
+      properties: {
+        file: { type: 'string' },
+        script: { type: 'string' },
+        vars: { type: 'object', additionalProperties: { type: 'string' } },
+        bundle: { type: 'boolean' },
+        bundle_dir: { type: 'string' },
+      },
     },
+  },
+  {
+    name: 'browser_bundle',
+    cmd: 'bundle',
+    description:
+      "Save the page as it is to a folder, to look into later or to hand to your user or another agent: page.txt (its text as you see it), screenshot.png (the window) and page.png (the whole page), page.html, console.txt and network.txt (everything it logged and asked for), and a README.md that says what's there, with the errors and failed requests. For a bug you found: `note` says what you were doing and what went wrong. Saved in `dir`, or in a folder of medley's own (~/.medley/bundles/…, where the newest 30 are kept); the result says where.",
+    inputSchema: { type: 'object', properties: { dir: { type: 'string' }, note: { type: 'string' } } },
   },
   {
     name: 'browser_ask_user',
@@ -424,7 +439,10 @@ export async function serveMcp(sessionName: string, start: StartOptions) {
     const vars = { ...process.env, ...((args.vars as Record<string, string>) ?? {}) };
     const results = await replay(sessionName, steps, { client, start, vars });
     const lines = results.flatMap((r, i) => stepLines(r, i + 1));
-    return { text: [...lines, replaySummary(results, steps.length, name)].join('\n'), ok: results.every((r) => r.ok) };
+    // A failure is kept as a bundle, for whoever looks into it after the page has moved on.
+    const dir = args.bundle_dir ? resolve(String(args.bundle_dir)) : undefined;
+    const saved = args.bundle === false ? '' : await bundleFailure(sessionName, client, steps, results, { name: basename(name), text }, dir);
+    return { text: [...lines, replaySummary(results, steps.length, name), ...(saved ? [saved] : [])].join('\n'), ok: results.every((r) => r.ok) };
   }
 
   async function handle(method: string, params: any): Promise<unknown> {
@@ -454,6 +472,7 @@ export async function serveMcp(sessionName: string, start: StartOptions) {
           if (tool.cmd === 'extract' && args.format === 'csv') args.csv = true;
           if (tool.cmd === 'record' && args.file) args.file = resolve(String(args.file));
           if (tool.cmd === 'inspect') args.shot = !!args.screenshot;
+          if (tool.cmd === 'bundle' && args.dir) args.dir = resolve(String(args.dir));
           if (tool.cmd === 'replay') {
             const { text, ok } = await replayFor(args);
             return { content: [{ type: 'text', text }], ...(ok ? {} : { isError: true }) };

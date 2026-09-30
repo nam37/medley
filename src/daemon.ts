@@ -7,6 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
+import { defaultBundleDir, pruneBundles, writeBundle, type Failure } from './bundle.ts';
 import { checksOf } from './checks.ts';
 import { codeStamp, removeSessionInfo, writeSessionInfo, type Command, type SessionEvent } from './client.ts';
 import { infoText } from './info.ts';
@@ -249,6 +250,7 @@ function summarize({ cmd, args }: Command, text: string, client: string): string
   if (cmd === 'network') return 'looked at the network';
   if (cmd === 'extract') return 'took data from the page';
   if (cmd === 'audit') return 'checked the page for accessibility';
+  if (cmd === 'bundle') return 'saved the page as it is, to a folder';
   if (cmd === 'inspect') return `looked closely at ${session.labelsFor(client).get(Number(args?.ref)) ?? 'an element'}`;
   if (cmd === 'history' && args?.n === undefined) return 'listed the history';
   return text.split('\n')[0];
@@ -363,6 +365,8 @@ async function dispatch({ cmd, args = {} }: Command, client: string): Promise<st
         shot: !!args.shot,
         css: Array.isArray(args.css) ? args.css.map(String).slice(0, 40) : [],
       });
+    case 'bundle':
+      return bundle(args, client);
     case 'record':
       return record(String(args.action ?? 'status'), args.file === undefined ? undefined : String(args.file));
     case 'dialog':
@@ -402,6 +406,40 @@ async function dispatch({ cmd, args = {} }: Command, client: string): Promise<st
     default:
       throw new Error(`unknown command "${cmd}"`);
   }
+}
+
+/** A replay's failed step, as the client that replayed tells it (see script.ts bundleFailure); undefined if it tells none. */
+function failureOf(value: unknown): Failure | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const f = value as Record<string, unknown>;
+  const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : []);
+  return {
+    script: String(f.script ?? 'the script'),
+    scriptText: String(f.scriptText ?? ''),
+    step: Number(f.step) || 1,
+    total: Number(f.total) || 1,
+    line: Number(f.line) || 1,
+    command: String(f.command ?? ''),
+    error: String(f.error ?? ''),
+    log: list(f.log),
+    rest: list(f.rest),
+    vars: list(f.vars),
+  };
+}
+
+/**
+ * Save the page as it is to a folder (a bundle: see bundle.ts): the one
+ * named, or one of medley's own, of which only the newest are kept.
+ */
+async function bundle(args: Record<string, unknown>, client: string): Promise<string> {
+  const dir = args.dir === undefined || args.dir === null ? undefined : String(args.dir);
+  if (dir !== undefined && !isAbsolute(dir)) throw new Error(`"${dir}" is not an absolute path`);
+  const failure = failureOf(args.failure);
+  const evidence = await session.evidence(client);
+  const note = args.note === undefined || args.note === null ? undefined : String(args.note);
+  const text = writeBundle(dir ?? defaultBundleDir(failure?.script || evidence.title || 'page'), evidence, { note, failure });
+  if (dir === undefined) pruneBundles();
+  return text;
 }
 
 /** Start, stop or ask about recording a script (see script.ts). */

@@ -88,7 +88,7 @@ try {
   check('replay in a fresh session: every step', r.status === 0 && (r.out.match(/^✓ /gm) ?? []).length === 7 && r.out.includes('replayed'), r.out);
   const broken = join(dir, 'broken.medley');
   writeFileSync(broken, readFileSync(script, 'utf8').replace('expect Thanks', 'expect Welcome back'));
-  r = run(OTHER, ['replay', broken]);
+  r = run(OTHER, ['replay', broken, '--no-bundle']);
   check('a check that fails stops it, exit status 1', r.status === 1 && r.out.includes('✗ 7 expect Welcome back') && r.out.includes('stopped at step 7 of 7'), r.out);
   out = run(SESSION, ['playwright', script]).out;
   check('as a Playwright test', out.includes(`await page.getByRole('button', { name: "Subscribe" }).click();`) &&

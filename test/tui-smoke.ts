@@ -341,6 +341,18 @@ try {
   await keys('x');
   await until('the inspection to close', (f) => !f.includes('the element · any key closes'));
 
+  // :bundle saves the page as it is to a folder, and says what's in it.
+  const bundled = join(tmpdir(), 'medley-smoke-bundle');
+  rmSync(bundled, { recursive: true, force: true });
+  mockInput.pressKey(':');
+  await mockInput.typeText(`bundle "${bundled}" --note "from the smoke test"`);
+  mockInput.pressEnter();
+  show(':bundle says what it saved', await until('the bundle', (f) => f.includes('saved · any key closes') && f.includes('README.md') && f.includes('screenshot.png')));
+  await keys('x');
+  await until('the bundle to close', (f) => !f.includes('saved · any key closes'));
+  console.log(`\nthe bundle was written, with its note: ${existsSync(join(bundled, 'README.md')) && readFileSync(join(bundled, 'README.md'), 'utf8').includes('from the smoke test') ? 'yes' : 'no (bad)'}`);
+  rmSync(bundled, { recursive: true, force: true });
+
   // :expect with several checks shows how each came out; one that isn't so says what is, in the status line.
   mockInput.pressKey(':');
   await mockInput.typeText('expect --title "test app" --count 1 button Say hello');

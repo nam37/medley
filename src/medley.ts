@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { readSessionInfo, saveInspection, saveScreenshot, send, STALE_HINT } from './client.ts';
 import { colorize } from './color.ts';
 import { CHECK_FLAGS, parseCommand, toUrl, UsageError } from './commands.ts';
 import { serveMcp } from './mcp.ts';
-import { parseScript, replay, replaySummary, stepLines, toPlaywright } from './script.ts';
+import { bundleFailure, parseScript, replay, replaySummary, stepLines, toPlaywright } from './script.ts';
 import { Session } from './session.ts';
 import { watchFiles } from './watch.ts';
 
@@ -70,6 +70,9 @@ session commands:
                                   --disabled, --focused, --expanded, --collapsed, --selected, --pressed
   expect --no-errors              check the page logged no errors and none of its requests failed
                                   (several checks can go in one expect; --within <seconds> to wait longer)
+  bundle [dir] [--note <text>]    save the page as it is to a folder: its text, a picture, its HTML,
+                                  what it logged and asked for, and a README.md saying what's there
+                                  (default ~/.medley/bundles/…, where the newest 30 are kept)
   record start [file]             write down what's done in this session, as a script of commands
                                   that name what they act on (default ~/.medley/recordings/…)
   record stop | status            stop, and print the script; or say how far it's got
@@ -86,7 +89,9 @@ session commands:
 
 other commands:
   replay <script> [--verbose]     do a recorded script's steps again, stopping at the first that
-                                  fails (with exit status 1); \${NAME} in it comes from the environment
+                                  fails (with exit status 1); \${NAME} in it comes from the environment.
+                                  A failure is saved as a bundle: the step, the steps before it, and
+                                  what the page was (--bundle <dir>: where; --no-bundle: not at all)
   playwright <script>             print the script as a Playwright test
   watch [dir] [--hot]             reload the page when files in dir (default .) change, and say how
                                   its text changed (--hot: the dev server updates the page itself)
@@ -146,6 +151,9 @@ const opts = {
   noErrors: false,
   checks: [] as [string, string][],
   shot: undefined as string | undefined,
+  note: undefined as string | undefined,
+  bundle: undefined as string | undefined,
+  noBundle: false,
   css: undefined as string | undefined,
   verbose: false,
   hot: false,
@@ -182,6 +190,9 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--within') opts.within = value();
   else if (a === '--no-errors') opts.noErrors = true;
   else if (a === '--shot') opts.shot = value();
+  else if (a === '--note') opts.note = value();
+  else if (a === '--bundle') opts.bundle = resolve(value());
+  else if (a === '--no-bundle') opts.noBundle = true;
   else if (a === '--css') opts.css = value();
   else if (CHECK_FLAGS.has(a)) opts.checks.push([a.slice(2), value()]);
   else if (a === '--verbose') opts.verbose = true;
@@ -226,7 +237,8 @@ async function oneShot(url: string) {
 /** medley replay: a script's steps, each printed as it's done; false if one failed. */
 async function replayScript(file: string): Promise<boolean> {
   const path = resolve(file);
-  const steps = parseScript(readFileSync(path, 'utf8'));
+  const text = readFileSync(path, 'utf8');
+  const steps = parseScript(text);
   if (!steps.length) fail(`${file} has no steps`);
   const paint = (line: string) =>
     !opts.color ? line : line.startsWith('✓') ? `\x1b[32m✓\x1b[39m${line.slice(1)}` : line.startsWith('✗') ? `\x1b[31m${line}\x1b[39m` : `\x1b[2m${line}\x1b[22m`;
@@ -237,6 +249,9 @@ async function replayScript(file: string): Promise<boolean> {
     onStep: (r, i) => process.stdout.write(stepLines(r, i + 1, { verbose: opts.verbose }).map(paint).join('\n') + '\n'),
   });
   process.stdout.write(`${replaySummary(results, steps.length, file)}\n`);
+  // A failure is kept, to look into after the page has moved on.
+  const saved = opts.noBundle ? '' : await bundleFailure(opts.session, 'replay', steps, results, { name: basename(file), text }, opts.bundle);
+  if (saved) process.stdout.write(`${saved}\n`);
   return results.every((r) => r.ok);
 }
 
@@ -283,7 +298,7 @@ if (!command) {
   try {
     const text = await run();
     // Page info and a page's source aren't page text: printed as they are, for reading, saving or piping.
-    const plain = opts.json || ['source', 'info', 'console', 'network', 'extract', 'audit', 'record', 'expect', 'inspect'].includes(command);
+    const plain = opts.json || ['source', 'info', 'console', 'network', 'extract', 'audit', 'record', 'expect', 'inspect', 'bundle'].includes(command);
     process.stdout.write((opts.color && !plain ? colorize(text) : text) + '\n');
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'EPIPE') process.exit(0);

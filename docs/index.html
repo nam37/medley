@@ -210,7 +210,7 @@
           <a class="btn" href="demo/"><span class="n">[7]</span>Open the demo shop</a>
           <a class="btn" href="https://github.com/nam37/medley"><span class="n">[8]</span>Source on GitHub</a>
         </div>
-        <p class="note">The demo shop is an ordinary web page, made for pointing medley at. medley itself runs in your terminal: <code>medley tui nam37.github.io/medley/demo/</code></p>
+        <p class="note">The demo shop is an ordinary web page, made for pointing medley at. medley itself runs in your terminal, from its folder (see <a href="#install">install</a>): <code>bun src/medley.ts tui nam37.github.io/medley/demo/</code></p>
         <figure class="film">
           <video id="film" autoplay muted loop playsinline preload="metadata" poster="assets/medley-poster.jpg" aria-label="A 30-second animation: a web page folds into medley's text, a click returns only the diff, an agent and a person share one session, and the terminal UI cycles its grid modes.">
             <source src="assets/medley.webm" type="video/webm">
@@ -401,7 +401,7 @@ Fernway Outfitters is a made-up shop: a page for trying <span class="ref">[19]</
 <span class="prompt">$ </span>bun src/medley.ts tui nam37.github.io/medley/demo/</pre>
           <button class="copy" type="button" data-copy="git clone https://github.com/nam37/medley.git&#10;cd medley&#10;bun install&#10;bun src/medley.ts tui nam37.github.io/medley/demo/">copy</button>
         </div>
-        <p class="prose" style="margin-top: 22px">Then <code>bun src/medley.ts goto &lt;url&gt;</code>, <code>snapshot</code>, <code>click &lt;ref&gt;</code> and friends from any shell, or <code>bun src/medley.ts mcp</code> for agents. The <a href="https://github.com/nam37/medley#readme">README</a> lists every command, key and option, and what doesn't work yet.</p>
+        <p class="prose" style="margin-top: 22px">Then <code>bun src/medley.ts goto &lt;url&gt;</code>, <code>snapshot</code>, <code>click &lt;ref&gt;</code> and friends from any shell, or <code>bun src/medley.ts mcp</code> for agents. The examples above write <code>medley</code> for <code>bun src/medley.ts</code>; the <a href="https://github.com/nam37/medley#install">README</a> shows how to make a <code>medley</code> command, and lists every command, key and option, and what doesn't work yet.</p>
       </div>
     </section>
   </main>

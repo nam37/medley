@@ -137,6 +137,8 @@ export class App {
   private promptLabel: Bar;
   private input: InputRenderable;
   private help: BoxRenderable;
+  private helpText: TextRenderable;
+  private helpTop = 0; // the first line of the keys showing, when they don't all fit
   private infoBox: BoxRenderable; // page info (=)
   private infoContent: TextRenderable;
   private infoSite = ''; // the site whose data c would clear
@@ -244,7 +246,8 @@ export class App {
       title: ' keys · any key to close ',
       backgroundColor: THEME.barBg,
     });
-    this.help.add(new TextRenderable(renderer, { content: HELP.join('\n'), fg: THEME.barFg, paddingLeft: 1 }));
+    this.helpText = new TextRenderable(renderer, { content: HELP.join('\n'), fg: THEME.barFg, paddingLeft: 1 });
+    this.help.add(this.helpText);
     renderer.root.add(this.help);
     this.infoBox = new BoxRenderable(renderer, {
       position: 'absolute',
@@ -578,6 +581,38 @@ export class App {
     }
   }
 
+  // ---- the keys (?) ------------------------------------------------------------------
+
+  /** How many lines of keys fit between the top bar and the status line. */
+  private get helpRows(): number {
+    return Math.max(3, Math.min(HELP.length, this.renderer.height - 6));
+  }
+
+  /** The keys, over the page: all of them, or as many as fit, scrolled to helpTop. */
+  private showHelp() {
+    const rows = this.helpRows;
+    this.helpTop = Math.max(0, Math.min(this.helpTop, HELP.length - rows));
+    const end = this.helpTop + rows;
+    this.helpText.content = HELP.slice(this.helpTop, end).join('\n');
+    this.help.height = rows + 2;
+    this.help.title =
+      rows < HELP.length
+        ? ` keys ${this.helpTop + 1}–${end} of ${HELP.length} · ↑ ↓ PgUp PgDn scroll · any other key closes `
+        : ' keys · any key to close ';
+    this.help.visible = true;
+  }
+
+  /** In the keys: scroll when they don't all fit; any other key closes them. */
+  private helpKey(key: KeyEvent) {
+    const rows = this.helpRows;
+    const by: Record<string, number> = { up: -1, k: -1, down: 1, j: 1, pageup: -rows, pagedown: rows, space: rows, home: -Infinity, end: Infinity };
+    if (rows < HELP.length && key.name in by) {
+      this.helpTop = Math.max(0, Math.min(HELP.length - rows, this.helpTop + by[key.name]));
+      return this.showHelp();
+    }
+    this.help.visible = false;
+  }
+
   /** The conversation so far, in a box over the page, while you're saying something to the agent. */
   private showTalk() {
     const recent = this.talkLog.slice(-8);
@@ -756,10 +791,7 @@ export class App {
     }
     // Handled here, so a prompt opened by this key doesn't also receive it.
     key.preventDefault();
-    if (this.help.visible) {
-      this.help.visible = false;
-      return;
-    }
+    if (this.help.visible) return this.helpKey(key);
     if (this.infoBox.visible) return this.infoKey(key);
     if (this.picker) return this.pickerKey(key);
     if (this.refsBox.visible) return this.refsKey(key);
@@ -886,8 +918,8 @@ export class App {
         return this.drawStatus();
     }
     if (ch === '?') {
-      this.help.visible = true;
-      return;
+      this.helpTop = 0;
+      return this.showHelp();
     }
     if (ch === '=') return void this.openInfo();
     if (ch === '>') return this.openTalk();

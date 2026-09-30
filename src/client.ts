@@ -230,6 +230,9 @@ async function post(info: SessionInfo, command: Command): Promise<Reply> {
     });
   } catch (e) {
     if ((e as Error).name === 'TimeoutError') throw new Error('the session did not answer in time');
+    // Cut off mid-command (the session was stopped, or its browser closed): not a session to start
+    // again and send the command to, as one that isn't there at all is.
+    if ((e as NodeJS.ErrnoException).code === 'ECONNRESET') throw new Error('the session went away while it was running the command');
     throw new Unreachable();
   }
   const body = (await res.json().catch(() => null)) as

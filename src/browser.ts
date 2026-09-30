@@ -34,6 +34,16 @@ export function findBrowser(): string {
 
 type Msg = { id?: number; method?: string; params?: any; result?: any; error?: { message: string }; sessionId?: string };
 
+/**
+ * How long the browser has to answer a request (MEDLEY_PAGE_TIMEOUT seconds,
+ * default 30). A page stuck in a script never answers anything sent to it;
+ * without a limit, that would hold up the session for good.
+ */
+const ANSWER_MS = (Number(process.env.MEDLEY_PAGE_TIMEOUT) || 30) * 1000;
+
+/** The browser didn't answer in time: most likely, a script on the page is stuck. */
+export class NoAnswer extends Error {}
+
 export class CDP {
   private seq = 0;
   private pending = new Map<
@@ -78,14 +88,23 @@ export class CDP {
     else p.resolve(m.result);
   }
 
-  send(method: string, params: object = {}, sessionId?: string): Promise<any> {
+  send(method: string, params: object = {}, sessionId?: string, timeout = ANSWER_MS): Promise<any> {
     const id = ++this.seq;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { method, sessionId, resolve, reject });
+      const timer = setTimeout(() => {
+        if (this.pending.delete(id)) reject(new NoAnswer(`${method}: no answer in ${Math.round(timeout / 1000)}s`));
+      }, timeout);
+      (timer as any).unref?.();
+      const settle = <T>(fn: (v: T) => void) => (v: T) => {
+        clearTimeout(timer);
+        fn(v);
+      };
+      this.pending.set(id, { method, sessionId, resolve: settle(resolve), reject: settle(reject) });
       try {
         this.ws.send(JSON.stringify({ id, method, params, sessionId }));
       } catch (e) {
         this.pending.delete(id);
+        clearTimeout(timer);
         reject(e as Error);
       }
     });
@@ -129,6 +148,9 @@ const IGNORED_REQUESTS = new Set([
 ]);
 // A request still open after this long is a long-poll or a stream; settling doesn't wait for it.
 const STALE_REQUEST_MS = 3000;
+// The longest an action waits for the page to settle, and a navigation for its new document to be parsed.
+const SETTLE_MS = 15_000;
+const PARSE_MS = 10_000;
 
 /** How the page's document arrived: the response, and the connection's security when it was https. */
 export interface DocumentResponse {
@@ -235,6 +257,7 @@ export class Page {
   onDialog: ((d: Dialog) => void) | null = null;
   onNavigated: (() => void) | null = null; // the main frame got a new document
   closed = false; // the tab went away; waiting on it is pointless
+  private offs: (() => void)[] = []; // this page's listeners on the browser connection (see dispose)
 
   constructor(
     private cdp: CDP,
@@ -245,7 +268,7 @@ export class Page {
   ) {}
 
   async init() {
-    this.on((method, p) => {
+    const off = this.on((method, p) => {
       switch (method) {
         case 'Network.requestWillBeSent':
           this.requestStarted(p);
@@ -319,11 +342,12 @@ export class Page {
           break;
       }
     });
-    this.cdp.on((m) => {
+    const offFrames = this.cdp.on((m) => {
       if (m.method && m.sessionId && (m.sessionId === this.sessionId || this.childSessions.has(m.sessionId))) {
         this.frameEvent(m.sessionId, m.method, m.params);
       }
     });
+    this.offs.push(off, offFrames);
     await this.send('Page.enable');
     await this.send('Network.enable');
     await this.send('Log.enable'); // browser messages: blocked content, security; see watchConsole for the page's own
@@ -339,8 +363,35 @@ export class Page {
     });
   }
 
-  send(method: string, params: object = {}): Promise<any> {
-    return this.cdp.send(method, params, this.sessionId);
+  send(method: string, params: object = {}, timeout?: number): Promise<any> {
+    return this.cdp.send(method, params, this.sessionId, timeout);
+  }
+
+  /** The tab closed: stop listening for it, so a long session doesn't collect the listeners of every tab it had. */
+  dispose() {
+    this.closed = true;
+    for (const off of this.offs.splice(0)) off();
+  }
+
+  /**
+   * Whether a script on the page is stuck (in a loop, say), so the page
+   * answers nothing, not even the simplest question. If so, stop the script,
+   * as a browser's "page unresponsive" dialog would. True if it had to.
+   */
+  async unstick(): Promise<boolean> {
+    if (await this.responsive(1500)) return false;
+    await this.send('Runtime.terminateExecution', {}, 3000).catch(() => {});
+    return true;
+  }
+
+  /** Whether the page answers the simplest question within `timeout` ms (a script stuck in a loop blocks every answer). */
+  async responsive(timeout = 5000): Promise<boolean> {
+    try {
+      await this.send('Runtime.evaluate', { expression: '0', returnByValue: true }, timeout);
+      return true;
+    } catch (e) {
+      return !(e instanceof NoAnswer); // another error (between documents) isn't being stuck
+    }
   }
 
   // ---- frames ---------------------------------------------------------------
@@ -534,7 +585,7 @@ export class Page {
   }
 
   /** Resolves when the main frame's new document is parsed, or its loading stops (a failure, a download). */
-  private parsed(timeout = 20000): Promise<void> {
+  private parsed(timeout = PARSE_MS): Promise<void> {
     return new Promise((resolve) => {
       const done = () => {
         clearTimeout(timer);
@@ -571,16 +622,22 @@ export class Page {
 
   /**
    * Wait for the page to finish reacting to whatever just happened: any
-   * navigation it started, then the network and the DOM going quiet.
+   * navigation it started, then the network and the DOM going quiet; for
+   * SETTLE_MS at most. True if it was still loading its document by then (a
+   * script or a request holding it up), so the caller can say what it shows
+   * is only as far as it got.
    */
-  async settle() {
+  async settle(): Promise<boolean> {
     await sleep(100); // give a click or key press a moment to start a navigation or requests
+    const until = Date.now() + SETTLE_MS;
     for (let round = 0; round < 3 && !this.closed; round++) {
-      const deadline = Date.now() + 15000;
-      while (this.loading && !this.closed && Date.now() < deadline) await sleep(50);
-      await Promise.all([this.networkQuiet(), this.evaluate(DOM_QUIET(300, 1500)).catch(() => {})]);
-      if (!this.loading) return;
+      while (this.loading && !this.closed && Date.now() < until) await sleep(50);
+      if (Date.now() >= until) break;
+      // A page stuck in a script can't answer; don't wait long for it to say its DOM is quiet.
+      await Promise.all([this.networkQuiet(400, Math.min(4000, until - Date.now())), this.evaluate(DOM_QUIET(300, 1500), 4000).catch(() => {})]);
+      if (!this.loading) return false;
     }
+    return this.loading && !this.closed;
   }
 
   private documentResponse(p: { requestId: string; response: any }) {
@@ -682,14 +739,17 @@ export class Page {
     }
   }
 
-  /** Evaluate in medley's isolated world (see `world`), creating it for this document if needed. */
-  async evaluate<T>(expression: string): Promise<T> {
-    return (await this.run(expression, true, null)).value as T;
+  /**
+   * Evaluate in medley's isolated world (see `world`), creating it for this
+   * document if needed; NoAnswer if the page doesn't answer within `timeout` ms.
+   */
+  async evaluate<T>(expression: string, timeout?: number): Promise<T> {
+    return (await this.run(expression, true, null, timeout)).value as T;
   }
 
   /** Evaluate in medley's world in a child frame (null: the main frame). */
-  async evaluateIn<T>(frameId: string | null, expression: string): Promise<T> {
-    return (await this.run(expression, true, frameId)).value as T;
+  async evaluateIn<T>(frameId: string | null, expression: string, timeout?: number): Promise<T> {
+    return (await this.run(expression, true, frameId, timeout)).value as T;
   }
 
   /**
@@ -708,16 +768,24 @@ export class Page {
     }
   }
 
-  private async run(expression: string, returnByValue: boolean, frameId: string | null): Promise<{ value?: unknown; objectId?: string }> {
+  private async run(
+    expression: string,
+    returnByValue: boolean,
+    frameId: string | null,
+    timeout = ANSWER_MS,
+  ): Promise<{ value?: unknown; objectId?: string }> {
     const run = async () => {
       const contextId = await this.worldFor(frameId);
       const session = frameId ? this.sessionOf(frameId)! : this.sessionId;
-      return this.cdp.send('Runtime.evaluate', { expression, contextId, returnByValue, awaitPromise: true }, session);
+      return this.cdp.send('Runtime.evaluate', { expression, contextId, returnByValue, awaitPromise: true }, session, timeout);
     };
     let r;
     try {
       r = await run();
     } catch (e) {
+      if (e instanceof NoAnswer) {
+        throw new NoAnswer(`the page didn't answer in ${Math.round(timeout / 1000)}s: a script on it may be stuck (reload stops it)`);
+      }
       // The document changed under us (its world went with it); make one in the new document.
       if (!/context/i.test((e as Error).message)) throw e;
       if (frameId) this.worlds.delete(frameId);

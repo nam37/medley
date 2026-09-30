@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditText, type AuditResult } from './audit.ts';
-import { Browser, sleep, type Dialog, type DownloadEvent, type LaunchOptions, type Page, type RequestEntry } from './browser.ts';
+import { Browser, NoAnswer, sleep, type Dialog, type DownloadEvent, type LaunchOptions, type Page, type RequestEntry } from './browser.ts';
 import { diffLines, fencedLines, whereIs } from './diff.ts';
 import { ABOUT, siteOf, type About, type PageInfo } from './info.ts';
 import { parseKey } from './keys.ts';
@@ -14,6 +14,14 @@ import { matchRef } from './names.ts';
 import type { RecordingStatus } from './script.ts';
 import { refTokens } from './tokens.ts';
 import { mainText, pageData, renderParts, type El, type LayoutGroup, type PageData, type PageModel, type Visual } from './render.ts';
+
+const SETTLE_S = 15; // see Page.settle
+
+/** Said when the page doesn't answer (see Page.responsive). */
+const STUCK = "the page isn't answering: a script on it seems stuck (reload stops it)";
+
+/** Said when a page was stuck in a script and medley stopped it (see Page.unstick). */
+const UNSTUCK = 'the page was stuck in a script and answered nothing; medley stopped the script first';
 
 const read = (file: string) => readFileSync(fileURLToPath(new URL(file, import.meta.url)), 'utf8');
 const EXTRACT = read('./extract.js');
@@ -298,6 +306,13 @@ const failure = (r: RequestEntry) => (r.failed && r.failed !== 'canceled' ? r.fa
 const textProbe = (text: string) =>
   `(() => (document.title + '\\n' + ((document.body && document.body.innerText) || '')).toLowerCase().includes(${JSON.stringify(text.toLowerCase())}))()`;
 
+// How long a check for text waits for the page to answer; a stuck page gets no more than this per look.
+const PROBE_MS = 2000;
+
+/** What a wait or a check says when the page never answered it: it doesn't know, rather than guessing. */
+const couldntTell = (text: string, what: string, seconds: number) =>
+  `couldn't tell whether "${text}" ${what}: the page didn't answer for ${seconds}s (a script on it may be stuck; reload stops it)`;
+
 /** A line with its refs' numbers taken out, for comparing two loads of a page (see diffLines). */
 const withoutRefs = (line: string) => line.replace(/\[\d+(?=[\] ])/g, '[#');
 
@@ -359,6 +374,7 @@ export class Session {
     let what = `opened ${url}`;
     const open = async () => {
       const before = this.downloadsStarted;
+      if (await this.page.unstick()) this.notes.push(UNSTUCK);
       try {
         await this.page.goto(url);
       } catch (e) {
@@ -418,7 +434,16 @@ export class Session {
       const at = await this.locate(ref);
       await this.page.click(at.x, at.y);
     }
-    const r = await this.callRef<{ hasText?: boolean; error?: string }>('focus', ref);
+    type Focused = { hasText?: boolean; error?: string; unfocused?: boolean };
+    let r = await this.callRef<Focused>('focus', ref);
+    if (r.unfocused) {
+      // A widget that takes the focus only when clicked (a combobox that opens a search box):
+      // click it, then type only if that put the focus in a text field of its own.
+      const at = await this.locate(ref);
+      await this.page.click(at.x, at.y);
+      await sleep(150);
+      r = await this.callRef<Focused>('focusAfterClick', ref);
+    }
     if (r.error) throw new Error(r.error);
     if (text) await this.page.insertText(text);
     else if (r.hasText) await this.page.press(parseKey('Delete')); // clear the selected text
@@ -503,18 +528,15 @@ export class Session {
     return this.act(client, () => what, async () => {
       const start = Date.now();
       for (;;) {
-        let present = false;
-        try {
-          present = await this.page.evaluate<boolean>(probe);
-        } catch {
-          // the page is between documents; look again
-        }
+        // Null when the page didn't answer (between documents, or stuck): that's no answer either way.
+        const present = await this.page.evaluate<boolean>(probe, PROBE_MS).catch(() => null);
         const took = ((Date.now() - start) / 1000).toFixed(1);
-        if (present !== gone) {
+        if (present !== null && present !== gone) {
           what = gone ? `"${text}" went away after ${took}s` : `"${text}" appeared after ${took}s`;
           return;
         }
         if (Date.now() - start >= seconds * 1000) {
+          if (present === null) throw new Error(couldntTell(text, gone ? 'went away' : 'appeared', seconds));
           what = gone ? `"${text}" was still there after ${seconds}s` : `"${text}" didn't appear within ${seconds}s`;
           return;
         }
@@ -536,14 +558,11 @@ export class Session {
     const probe = textProbe(want);
     const start = Date.now();
     for (;;) {
-      let present: boolean | null = null;
-      try {
-        present = await this.page.evaluate<boolean>(probe);
-      } catch {
-        // the page is between documents; look again
-      }
+      // Null when the page didn't answer (between documents, or stuck): that's no answer either way.
+      const present = await this.page.evaluate<boolean>(probe, PROBE_MS).catch(() => null);
       if (present !== null && present !== gone) break;
       if (Date.now() - start >= seconds * 1000) {
+        if (present === null) throw new Error(couldntTell(want, gone ? 'is gone' : 'is on the page', seconds));
         const at = await this.page.evaluate<{ title: string; url: string }>('({ title: document.title, url: location.href })').catch(() => null);
         const page = at ? ` (the page is "${at.title || '(untitled)'}", ${at.url})` : '';
         throw new Error(
@@ -606,7 +625,11 @@ export class Session {
   /** Reload the page; with `diff`, report what changed from before (for a page being edited) rather than all of it. */
   reload(client: string, hard = false, diff = false): Promise<string> {
     if (this.dialog) this.answerQuietly();
-    return this.act(client, hard ? 'reloaded, bypassing the cache' : 'reloaded', () => this.page.reload(hard), { across: diff });
+    const reload = async () => {
+      if (await this.page.unstick()) this.notes.push(UNSTUCK);
+      await this.page.reload(hard);
+    };
+    return this.act(client, hard ? 'reloaded, bypassing the cache' : 'reloaded', reload, { across: diff });
   }
 
   /** Give a file field these files (absolute paths on this machine), as if they were picked in its dialog. */
@@ -625,6 +648,7 @@ export class Session {
   history(client: string, delta: -1 | 1): Promise<string> {
     const what = delta < 0 ? 'went back' : 'went forward';
     return this.act(client, what, async () => {
+      if (await this.page.unstick()) this.notes.push(UNSTUCK);
       if (!(await this.page.history(delta))) throw new Error(`there is no page to go ${delta < 0 ? 'back' : 'forward'} to`);
     });
   }
@@ -661,7 +685,10 @@ export class Session {
     const entry = entries[n - 1];
     if (!entry) throw new Error(`there is no page ${n} in this tab's history; history lists ${entries.length}`);
     if (entry.id === currentId) return this.report(client, `already on page ${n} of the history`);
-    return this.act(client, `went to page ${n} of the history`, () => this.page.historyGo(entry.id));
+    return this.act(client, `went to page ${n} of the history`, async () => {
+      if (await this.page.unstick()) this.notes.push(UNSTUCK);
+      await this.page.historyGo(entry.id);
+    });
   }
 
   /** Let the page work; with `diff`, report what changed even if it loaded anew meanwhile (a dev server's reload). */
@@ -1118,7 +1145,7 @@ export class Session {
     const i = this.tabs.findIndex((t) => t.targetId === targetId);
     if (i < 0) return; // not ours, or already handled
     const [page] = this.tabs.splice(i, 1);
-    page.closed = true;
+    page.dispose();
     const opener = this.openers.get(page);
     this.openers.delete(page);
     if (page !== this.page) return;
@@ -1289,7 +1316,9 @@ export class Session {
     const work = (async () => {
       await action();
       const t1 = performance.now();
-      await page.settle();
+      if (await page.settle()) {
+        this.notes.push(`the page is still loading after ${SETTLE_S}s (a script or a request is holding it up): this is as far as it got`);
+      }
       if (this.downloadsStarted > downloadsBefore) await this.downloadsFinish(30_000);
       this.timing.action = t1 - t0;
       this.timing.settle = performance.now() - t1;
@@ -1334,10 +1363,13 @@ export class Session {
 
   private async capture(): Promise<Snap> {
     const t0 = performance.now();
+    // A page stuck in a script can't be read: say so now, not after waiting out every read.
+    if (!(await this.page.responsive())) throw new NoAnswer(STUCK);
     let model: PageModel;
     try {
       model = await this.extract();
-    } catch {
+    } catch (e) {
+      if (e instanceof NoAnswer) throw e;
       // A navigation raced the snapshot; wait for it and try once more.
       await this.page.settle();
       model = await this.extract();

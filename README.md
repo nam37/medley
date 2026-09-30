@@ -112,7 +112,7 @@ sweeps across the `medley` badge and the status line says what's happening.
 | r, R | reload the page, like a browser's refresh (R bypasses the cache) |
 | w | wait 2 seconds and show what the page changed by itself |
 | y n | accept or dismiss a `confirm()` the page opened (a `prompt()` asks for its answer) |
-| ? | show all keys |
+| ? | show all keys (↑ ↓ PgUp PgDn scroll them when they don't all fit) |
 | q | quit: asks "Quit medley?", then "Close the background browser session?" (n keeps it running for other clients) |
 | Q, Ctrl+C | quit at once, keeping the session running |
 
@@ -472,7 +472,10 @@ After an action you get one of:
   the element (or its label), and, in a frame, gets through each page around
   it to that frame. If something covers it, the error names what.
   `type` focuses the field, selects its text and inserts the new text, so
-  frameworks see ordinary input events.
+  frameworks see ordinary input events. It checks first that the keyboard
+  focus went to that field: a widget that takes it only when clicked (a
+  combobox that opens a search box) is clicked, and if the focus still isn't
+  in a field of its own, `type` fails rather than type into whatever had it.
 - **Settling:** after each action it waits for any navigation, then for the
   network and the DOM to go quiet, before taking the next snapshot. Requests
   that can't change the text (images, media, fonts, pings, prefetches) and
@@ -482,6 +485,15 @@ After an action you get one of:
   announced on the event stream once it settles; the next command reports it
   as a new page. The session log has a line per command with where its time
   went: `goto https://news.ycombinator.com 1992ms (action 1440 · settle 511 · read 39)`.
+- **Nothing waits forever.** Settling takes 15 seconds at most; a page still
+  loading by then (a script or a request holding it up) comes back as far as
+  it got, with a note saying so. The browser has 30 seconds to answer anything
+  (`MEDLEY_PAGE_TIMEOUT` changes that), and a page stuck in a script, which
+  answers nothing, is reported as stuck within a few seconds; `reload`, `goto`,
+  `back` and `forward` stop the stuck script first. A wait or a check that
+  couldn't look at the page says it couldn't tell, never that the text came or
+  went. `stop` never waits behind other commands, and a command whose sender
+  gave up while it waited in line isn't run.
 - **Uploads** set a file field's files directly, as picking them in its
   dialog would, and the page gets its usual `change` event. Paths are resolved
   by the client (the CLI, the terminal UI or the MCP server) against its own
@@ -524,6 +536,13 @@ a mouse click, back, a `confirm()`, a page that moves on by itself, the picture
 viewer, page info, the source view, recording a script (the `● rec`
 badge, the script's box), `:audit`, the help overlay, and a search from the
 address prompt. It prints each frame as it goes.
+`bun run test:stability` checks medley's word when things go wrong, against
+pages served for it: typing into comboboxes that won't take the focus or open
+a search box, a page stuck in a script (a click on it returns, a wait says it
+couldn't tell, reload frees it), a page held up by a script that never
+arrives, tabs opened and closed leaving no listeners behind, `stop` while a
+command is stuck, a command whose sender gave up in line, and a failed replay
+over MCP.
 `bun run test:idle` starts a session that stops after 3 idle seconds and
 checks that a command keeps it going and that it then stops by itself; then
 that four commands run at once from four processes start one session between

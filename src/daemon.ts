@@ -63,6 +63,12 @@ const server = Bun.serve({
     }
     resetIdle();
     const client = command.client ?? 'cli';
+    // stop never waits in line: it's the way out when a command is stuck on a page.
+    if (command.cmd === 'stop') {
+      announce({ client, cmd: 'stop', ok: true, summary: 'stopped the session' });
+      setTimeout(shutdown, 50);
+      return Response.json({ ok: true, text: `stopped session "${name}"`, messages: forAgent(client) });
+    }
     // What the agent and the person watching say to each other never waits behind the browser.
     if (TALK.has(command.cmd)) {
       try {
@@ -76,6 +82,9 @@ const server = Bun.serve({
     }
     let refs: number[] = [];
     const run = queue.then(async () => {
+      // Its sender gave up while it waited in line (a command before it took long): it isn't
+      // wanted any more, and running it now would surprise whoever is at the page.
+      if (req.signal.aborted) throw new Error('its sender stopped waiting for it, so it was not run');
       const started = performance.now();
       try {
         await resolveNames(command, client);
@@ -103,8 +112,7 @@ const server = Bun.serve({
       announce({ client, cmd: command.cmd, ok: false, summary: `${command.cmd} failed: ${error.split('\n')[0]}` });
       return Response.json({ ok: false, error, messages: forAgent(client) });
     } finally {
-      if (command.cmd === 'stop') setTimeout(shutdown, 50);
-      else resetIdle(); // idle time counts from when the last command finished, not when it began
+      resetIdle(); // idle time counts from when the last command finished, not when it began
     }
   },
 });
@@ -382,8 +390,6 @@ async function dispatch({ cmd, args = {} }: Command, client: string): Promise<st
       return args.json ? JSON.stringify(await session.historyList()) : session.historyText();
     case 'status':
       return `${await session.status()} · session "${name}", pid ${process.pid}${profile ? ` · profile ${profile}` : ''}`;
-    case 'stop':
-      return `stopped session "${name}"`;
     default:
       throw new Error(`unknown command "${cmd}"`);
   }

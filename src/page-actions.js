@@ -154,23 +154,24 @@
     return `<${n.localName}${n.id ? '#' + n.id : ''}${cls}>${text ? ` "${text}"` : ''}`;
   },
 
-  // Focus a text field, selecting its current content so typing replaces it.
-  focus(ref) {
-    const el = this.element(ref);
-    if (!el) return this.missing(ref);
-    const role = (el.getAttribute('role') || '').toLowerCase();
-    const textInput = el.localName === 'input' &&
-      !/^(button|submit|reset|checkbox|radio|file|image|range|color|hidden)$/.test(el.type);
-    const editable = textInput || el.localName === 'textarea' || el.isContentEditable ||
-      /^(textbox|searchbox|combobox)$/.test(role);
-    if (!editable) return { error: `ref ${ref} is not a text field` };
-    if (el.disabled) return { error: `ref ${ref} is disabled` };
-    if (el.readOnly) return { error: `ref ${ref} is read-only` };
-    el.scrollIntoView({ block: 'center', behavior: 'instant' });
-    el.focus();
-    if (textInput || el.localName === 'textarea') {
-      el.select();
-    } else if (el.isContentEditable) {
+  // Whether keys typed into an element edit its text: a text input, a textarea, or editable content.
+  textField(el) {
+    if (!el) return false;
+    if (el.localName === 'input') return !/^(button|submit|reset|checkbox|radio|file|image|range|color|hidden)$/.test(el.type);
+    return el.localName === 'textarea' || !!el.isContentEditable;
+  },
+
+  // The element with the keyboard focus in a document, inside open shadow roots too.
+  activeIn(doc) {
+    let a = doc.activeElement;
+    while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+    return a;
+  },
+
+  // Select a focused field's text, so typing replaces it; whether it had any.
+  selectAll(el) {
+    if (el.localName === 'input' || el.localName === 'textarea') el.select();
+    else if (el.isContentEditable) {
       const range = el.ownerDocument.createRange();
       range.selectNodeContents(el);
       const sel = el.ownerDocument.getSelection();
@@ -178,6 +179,59 @@
       sel.addRange(range);
     }
     return { hasText: !!(el.value || (el.isContentEditable && el.textContent)) };
+  },
+
+  // Where typing would go instead, for an error.
+  elsewhere(doc, active) {
+    return active && active !== doc.body && active !== doc.documentElement ? `into ${this.describe(active)}` : 'nowhere';
+  },
+
+  // Focus a text field, selecting its current content so typing replaces it.
+  // A widget wrapping its field (a combobox around an input) gives its field.
+  // If the focus didn't go there (a widget that takes it only when clicked),
+  // say so rather than let typing land in whatever had it (`unfocused`).
+  focus(ref) {
+    const el = this.element(ref);
+    if (!el) return this.missing(ref);
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    const field = this.textField(el)
+      ? el
+      : [...el.querySelectorAll('input, textarea, [contenteditable=""], [contenteditable="true"]')].find((f) => this.textField(f) && f.checkVisibility());
+    if (!field && !/^(textbox|searchbox|combobox)$/.test(role)) return { error: `ref ${ref} is not a text field` };
+    const target = field || el;
+    if (target.disabled) return { error: `ref ${ref} is disabled` };
+    if (target.readOnly) return { error: `ref ${ref} is read-only` };
+    target.scrollIntoView({ block: 'center', behavior: 'instant' });
+    target.focus();
+    const doc = target.ownerDocument;
+    const active = this.activeIn(doc);
+    if (active !== target && !this.contains(target, active)) {
+      window.__medleyFocusBefore = active; // to tell, after a click, whether the click moved it
+      return { error: `ref ${ref} didn't take the keyboard focus, so typing would go ${this.elsewhere(doc, active)}`, unfocused: true };
+    }
+    return this.selectAll(this.textField(active) ? active : target);
+  },
+
+  // After a click on a widget that wouldn't take the focus (see focus): the
+  // text field the click put it in, inside the widget, in what it controls, or
+  // one that just got it (a combobox that opens a search box), ready to type
+  // into. Anything else is refused.
+  focusAfterClick(ref) {
+    const el = this.element(ref);
+    if (!el) return this.missing(ref);
+    const doc = el.ownerDocument;
+    const active = this.activeIn(doc);
+    const before = window.__medleyFocusBefore;
+    window.__medleyFocusBefore = undefined;
+    const controls = `${el.getAttribute('aria-controls') || ''} ${el.getAttribute('aria-owns') || ''}`.trim().split(/\s+/).filter(Boolean);
+    const inControlled = controls.some((id) => {
+      const c = doc.getElementById(id);
+      return c && this.contains(c, active);
+    });
+    if (!this.textField(active) || !(this.contains(el, active) || inControlled || active !== before)) {
+      return { error: `ref ${ref} didn't take the keyboard focus, even when clicked, so typing would go ${this.elsewhere(doc, active)}; click it and choose from what it shows instead` };
+    }
+    return this.selectAll(active);
   },
 
   // Choose an option of a <select> by its text or value.

@@ -384,8 +384,8 @@ export async function serveMcp(sessionName: string, start: StartOptions) {
   const client = `mcp-${process.pid}`;
   const write = (msg: object) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n');
 
-  /** A script's steps done again, as the agent itself (so its next look carries on from there). */
-  async function replayFor(args: Record<string, unknown>): Promise<string> {
+  /** A script's steps done again, as the agent itself (so its next look carries on from there); not ok if one failed. */
+  async function replayFor(args: Record<string, unknown>): Promise<{ text: string; ok: boolean }> {
     const name = args.file ? String(args.file) : 'the script';
     const text = args.script !== undefined ? String(args.script) : args.file ? readFileSync(resolve(String(args.file)), 'utf8') : '';
     const steps = parseScript(text);
@@ -393,7 +393,7 @@ export async function serveMcp(sessionName: string, start: StartOptions) {
     const vars = { ...process.env, ...((args.vars as Record<string, string>) ?? {}) };
     const results = await replay(sessionName, steps, { client, start, vars });
     const lines = results.flatMap((r, i) => stepLines(r, i + 1));
-    return [...lines, replaySummary(results, steps.length, name)].join('\n');
+    return { text: [...lines, replaySummary(results, steps.length, name)].join('\n'), ok: results.every((r) => r.ok) };
   }
 
   async function handle(method: string, params: any): Promise<unknown> {
@@ -422,7 +422,10 @@ export async function serveMcp(sessionName: string, start: StartOptions) {
           if (tool.cmd === 'tell-user') args.text = args.message;
           if (tool.cmd === 'extract' && args.format === 'csv') args.csv = true;
           if (tool.cmd === 'record' && args.file) args.file = resolve(String(args.file));
-          if (tool.cmd === 'replay') return { content: [{ type: 'text', text: await replayFor(args) }] };
+          if (tool.cmd === 'replay') {
+            const { text, ok } = await replayFor(args);
+            return { content: [{ type: 'text', text }], ...(ok ? {} : { isError: true }) };
+          }
           if (PAGE_TOOLS.has(tool.cmd)) args.max = args.max_chars === undefined ? MAX_CHARS : Number(args.max_chars);
           const command = { cmd: tool.cmd, args, client };
           const reply = await request(sessionName, command, tool.cmd === 'goto' ? start : undefined);

@@ -334,9 +334,15 @@ try {
   await until('the audit to close', (f) => !f.includes('accessibility · any key closes'));
 
   await keys('?');
-  show('? shows the keys', await until('the help', (f) => f.includes('any key to close')));
+  // ? shows the keys: as many as fit in the terminal (24 rows here), scrolling for the rest.
+  show('? shows the keys, as many as fit', await until('the help', (f) => /keys 1–\d+ of \d+/.test(f) && f.includes('Tab, Shift+Tab')));
+  await keys('ARROW_DOWN');
+  await until('a line down', (f) => /keys 2–\d+ of \d+/.test(f) && !f.includes('Tab, Shift+Tab'));
+  await keys('END');
+  show('End: the last of the keys', await until('the end', (f) => f.includes('In a field prompt')));
   await keys('x');
-  await until('the help to close', (f) => !f.includes('any key to close'));
+  await until('the help to close', (f) => !/keys \d+–\d+ of/.test(f));
+  console.log('\n↓ scrolled a line, End went to the last keys, x closed them');
 
   await keys('q');
   show('q asks first', await until('the question', (f) => f.includes('Quit medley?')));

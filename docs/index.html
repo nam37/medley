@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>medley — a text-mode web browser for humans and agents</title>
-  <meta name="description" content="medley turns any web page into compact text with every control numbered. Act by number, see only what changed, and drive the same browser session with your agent.">
+  <meta name="description" content="medley turns web pages into compact text with every control numbered. Act by number, see only what changed, and share one browser session with your agent: watch it work, and take over when it needs you.">
   <meta property="og:title" content="medley">
   <meta property="og:description" content="A text-mode web browser for humans and agents.">
   <meta property="og:image" content="https://nam37.github.io/medley/assets/social.png">
@@ -114,6 +114,7 @@
     pre.medley .del { color: var(--muted); text-decoration: line-through; text-decoration-color: rgba(31, 42, 51, 0.35); }
     pre.medley .add { display: inline-block; min-width: 100%; background: rgba(10, 125, 94, 0.08); box-shadow: inset 4px 0 0 var(--green); padding-left: 2px; }
     .note { font: 400 14px/1.5 var(--mono); color: var(--muted); margin: 14px 0 0; }
+    .note code { font: inherit; color: var(--ink); }
 
     /* two drivers */
     .steps { display: grid; gap: 18px; counter-reset: step; }
@@ -171,10 +172,11 @@
         <img class="word" src="assets/wordmark.png" alt="medley" width="130" height="26">
       </a>
       <nav class="refs" aria-label="Main">
-        <a href="#agents"><b>[1]</b><span>What agents see</span></a>
-        <a href="#terminal"><b>[2]</b><span>Terminal UI</span></a>
-        <a href="#install"><b>[3]</b><span>Install</span></a>
-        <a href="https://github.com/nam37/medley"><b>[4]</b><span>GitHub</span></a>
+        <a href="#together"><b>[1]</b><span>Working together</span></a>
+        <a href="#agents"><b>[2]</b><span>What agents see</span></a>
+        <a href="#terminal"><b>[3]</b><span>Terminal UI</span></a>
+        <a href="#install"><b>[4]</b><span>Install</span></a>
+        <a href="https://github.com/nam37/medley"><b>[5]</b><span>GitHub</span></a>
       </nav>
     </div>
   </header>
@@ -183,13 +185,14 @@
     <section class="hero">
       <div class="wrap">
         <p class="kicker">A text-mode web browser for humans and agents</p>
-        <h1>Any web page, as text <em>you and your agent</em> can click.</h1>
-        <p class="lede">medley turns pages into compact text with every link, button and field numbered. You act by number, and each action prints only what changed. People browse in a terminal UI, agents through MCP or the command line, and both can share one browser session.</p>
+        <h1>Web pages, as text <em>you and your agent</em> can click.</h1>
+        <p class="lede">medley turns web pages into compact text with every link, button and field numbered, and each action prints only what changed. Your agent browses through MCP or the command line while you watch the same browser session in a terminal UI, talk to it, and take over when it needs you.</p>
         <div class="actions">
-          <a class="btn primary" href="#install"><span class="n">[5]</span>Get started</a>
-          <a class="btn" href="demo/"><span class="n">[6]</span>Try it on the demo shop</a>
-          <a class="btn" href="https://github.com/nam37/medley"><span class="n">[7]</span>Source on GitHub</a>
+          <a class="btn primary" href="#install"><span class="n">[6]</span>Get started</a>
+          <a class="btn" href="demo/"><span class="n">[7]</span>Open the demo shop</a>
+          <a class="btn" href="https://github.com/nam37/medley"><span class="n">[8]</span>Source on GitHub</a>
         </div>
+        <p class="note">The demo shop is an ordinary web page, made for pointing medley at. medley itself runs in your terminal: <code>medley tui nam37.github.io/medley/demo/</code></p>
         <figure class="film">
           <video id="film" autoplay muted loop playsinline preload="metadata" poster="assets/medley-poster.jpg" aria-label="A 30-second animation: a web page folds into medley's text, a click returns only the diff, an agent and a person share one session, and the terminal UI cycles its grid modes.">
             <source src="assets/medley.webm" type="video/webm">
@@ -197,6 +200,36 @@
           </video>
           <figcaption>30 s · silent</figcaption>
         </figure>
+      </div>
+    </section>
+
+    <section class="band" id="together">
+      <div class="wrap">
+        <p class="landmark">main › two drivers, one session</p>
+        <h2>Watch your agent browse, and take over when it matters.</h2>
+        <p class="prose">A background session owns the browser. The terminal UI, the command line and every MCP connection are clients of that one session, so you see what the agent does as it happens, with its cursor on what it's working on. Press <kbd>&gt;</kbd> to tell it something. When it needs you, for a sign-in, a choice, or a yes before it buys anything, it asks and waits for your answer, and a <code>confirm()</code> on the page waits for you too.</p>
+        <div class="steps">
+          <div class="step">
+            <div class="shot"><img src="assets/tui-agent-typed.png" alt="medley's terminal UI on the demo page's form; the status line says, in purple, agent: typed into [12 textbox Email]." width="1726" height="1014" loading="lazy"></div>
+            <h3>The agent fills the form</h3>
+            <p><span class="who agent">agent</span> <code>type 12 sam@example.com</code>. Your terminal UI follows along and marks the line that changed.</p>
+          </div>
+          <div class="step">
+            <div class="shot"><img src="assets/tui-confirm.png" alt="The status line reads: the page asks (confirm): Send trail notes to sam@example.com? with the hint y accept, n dismiss." width="1726" height="1014" loading="lazy"></div>
+            <h3>The page asks to confirm</h3>
+            <p><span class="who agent">agent</span> <code>click 14</code> opens a <code>confirm()</code>. The page is blocked until someone answers it.</p>
+          </div>
+          <div class="step">
+            <div class="shot"><img src="assets/tui-accepted.png" alt="After pressing y: accepted the confirm, and the page now shows Thanks! Notes will go to sam@example.com." width="1726" height="1014" loading="lazy"></div>
+            <h3>You answer it</h3>
+            <p><span class="who you">you</span> press <kbd>y</kbd> in the terminal UI (or run <code>dialog accept</code>), and the page carries on.</p>
+          </div>
+        </div>
+        <div class="code" style="margin-top: 28px">
+<pre class="medley" aria-label="Add medley to Claude Code as an MCP server"><span class="prompt">$ </span>claude mcp add medley -- bun /path/to/medley/src/cli.ts mcp</pre>
+          <button class="copy" type="button" data-copy="claude mcp add medley -- bun /path/to/medley/src/cli.ts mcp">copy</button>
+        </div>
+        <p class="note">The MCP tools (browser_goto, browser_click, browser_type, …) talk to the same session as the command line and the terminal UI.</p>
       </div>
     </section>
 
@@ -297,36 +330,6 @@ Fernway Outfitters is a made-up shop: a page for trying <span class="ref">[19]</
       </div>
     </section>
 
-    <section class="band" id="together">
-      <div class="wrap">
-        <p class="landmark">main › two drivers, one session</p>
-        <h2>Watch your agent browse, and take over when it matters.</h2>
-        <p class="prose">A background session owns the browser. The terminal UI, the command line and every MCP connection are clients of that one session, so you see what the agent does as it happens, and a <code>confirm()</code> can wait for a person to answer it.</p>
-        <div class="steps">
-          <div class="step">
-            <div class="shot"><img src="assets/tui-agent-typed.png" alt="medley's terminal UI on the demo page's form; the status line says, in purple, agent: typed into [12 textbox Email]." width="1726" height="1014" loading="lazy"></div>
-            <h3>The agent fills the form</h3>
-            <p><span class="who agent">agent</span> <code>type 12 sam@example.com</code>. Your terminal UI follows along and marks the line that changed.</p>
-          </div>
-          <div class="step">
-            <div class="shot"><img src="assets/tui-confirm.png" alt="The status line reads: the page asks (confirm): Send trail notes to sam@example.com? with the hint y accept, n dismiss." width="1726" height="1014" loading="lazy"></div>
-            <h3>The page asks to confirm</h3>
-            <p><span class="who agent">agent</span> <code>click 14</code> opens a <code>confirm()</code>. The page is blocked until someone answers it.</p>
-          </div>
-          <div class="step">
-            <div class="shot"><img src="assets/tui-accepted.png" alt="After pressing y: accepted the confirm, and the page now shows Thanks! Notes will go to sam@example.com." width="1726" height="1014" loading="lazy"></div>
-            <h3>You answer it</h3>
-            <p><span class="who you">you</span> press <kbd>y</kbd> in the terminal UI (or run <code>dialog accept</code>), and the page carries on.</p>
-          </div>
-        </div>
-        <div class="code" style="margin-top: 28px">
-<pre class="medley" aria-label="Add medley to Claude Code as an MCP server"><span class="prompt">$ </span>claude mcp add medley -- bun /path/to/medley/src/cli.ts mcp</pre>
-          <button class="copy" type="button" data-copy="claude mcp add medley -- bun /path/to/medley/src/cli.ts mcp">copy</button>
-        </div>
-        <p class="note">The MCP tools (browser_goto, browser_click, browser_type, …) talk to the same session as the command line and the terminal UI.</p>
-      </div>
-    </section>
-
     <section class="band" id="terminal">
       <div class="wrap">
         <p class="landmark">main › the terminal UI</p>
@@ -353,10 +356,10 @@ Fernway Outfitters is a made-up shop: a page for trying <span class="ref">[19]</
       <div class="wrap">
         <p class="landmark">main › under the hood</p>
         <h2>Built on the real browser.</h2>
-        <p class="prose">medley drives headless Chrome or Edge over the DevTools protocol. Its only dependency is <a href="https://opentui.com">OpenTUI</a>, for the terminal UI.</p>
+        <p class="prose">medley drives headless Chrome or Edge over the DevTools protocol. Its only dependency is <a href="https://opentui.com">OpenTUI</a>, for the terminal UI. It reads what a page renders, so most pages work; canvas and WebGL apps don't become text (a screenshot shows them), and some sites turn headless browsers away. The <a href="https://github.com/nam37/medley#known-gaps">README</a> lists what doesn't work yet.</p>
         <div class="facts">
-          <div class="fact"><h3><b>01</b>Refs that stay put</h3><p>An element keeps its number for as long as the document lives, so diffs show only real changes. Refs from before a navigation are refused instead of hitting whatever has that number now.</p></div>
-          <div class="fact"><h3><b>02</b>Real clicks and typing</h3><p>Clicks are mouse events at a point hit-testing confirms lands on the element. If something covers it, the error names what. Typing produces ordinary input events.</p></div>
+          <div class="fact"><h3><b>01</b>Refs that stay put</h3><p>An element keeps its number for as long as the document lives, so diffs show only real changes. Refs from before a navigation, or into a frame that has since loaded another page, are refused instead of hitting whatever has that number now.</p></div>
+          <div class="fact"><h3><b>02</b>Real clicks and typing</h3><p>Clicks are mouse events at a point hit-testing confirms lands on the element, through any frames around it. If something covers it, the error names what. Typing produces ordinary input events.</p></div>
           <div class="fact"><h3><b>03</b>An isolated world</h3><p>medley's scripts share the page's DOM but not its JavaScript, like an extension's. A page can't see or forge the ref table to steer an agent.</p></div>
           <div class="fact"><h3><b>04</b>What's actually rendered</h3><p>Extraction walks the rendered page, including open shadow roots and iframes, even ones from other sites, like a sign-in or payment form, whose controls work like any other. Hidden content is dropped, labels fold into their controls, and passwords are masked.</p></div>
           <div class="fact"><h3><b>05</b>Waits for the page</h3><p>After each action it waits for any navigation, then for the network and the DOM to go quiet, before it looks.</p></div>

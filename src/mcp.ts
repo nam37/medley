@@ -47,7 +47,9 @@ Anywhere a ref goes, the element's name works too ("Add to cart"). After an
 action, notes say if the page logged errors or its requests failed;
 browser_console and browser_network show them. For a page you're building,
 browser_reload with diff=true after an edit says how its text changed, and
-browser_audit checks its accessibility. browser_expect says whether a change
+browser_audit checks its accessibility. browser_inspect looks closely at one
+element: why it can't be seen or clicked, which CSS rules style it and which
+scripts hear it, with their files and lines. browser_expect says whether a change
 worked, in one call: that some text is there (or gone, or there so many
 times), what the address and title are, what fields hold, whether controls are
 checked, enabled or focused, and that the page logged no errors. It fails,
@@ -231,6 +233,17 @@ const TOOLS: Tool[] = [
     description:
       "Check the page's accessibility (WCAG 2.2 A and AA, what can be checked automatically): pictures without a text alternative, controls without names, text with too little contrast, controls a keyboard can't reach, focusable things hidden from screen readers, frames without titles, a missing page language or title, zoom turned off; and as warnings, fields labelled only by a placeholder, headings that skip levels, vague link text. Each with the refs of what's wrong where it has them, and how to fix it.",
     inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'browser_inspect',
+    cmd: 'inspect',
+    description:
+      "Look closely at one element, as a browser's developer tools would: its markup, where it sits in the document and a CSS selector that finds only it; its accessible name (and the attribute or text it comes from) and role; its box, whether it can be seen and whether a click would land on it, and if not, why (display: none on an ancestor, covered by a banner, disabled, pointer-events); the styles it ends up with (colors and contrast, font, layout, flex or grid); the page's CSS rules that apply to it, strongest first, each with its stylesheet and line; and the event listeners on it and around it, each with its script and line. For finding out why something looks or behaves as it does, and where in the source to change it. `css` names more CSS properties to read; screenshot=true adds a picture of just the element. Nothing on the page is changed or scrolled.",
+    inputSchema: {
+      type: 'object',
+      properties: { ref: REF, css: { type: 'array', items: { type: 'string' } }, screenshot: { type: 'boolean' } },
+      required: ['ref'],
+    },
   },
   {
     name: 'browser_expect',
@@ -440,6 +453,7 @@ export async function serveMcp(sessionName: string, start: StartOptions) {
           if (tool.cmd === 'tell-user') args.text = args.message;
           if (tool.cmd === 'extract' && args.format === 'csv') args.csv = true;
           if (tool.cmd === 'record' && args.file) args.file = resolve(String(args.file));
+          if (tool.cmd === 'inspect') args.shot = !!args.screenshot;
           if (tool.cmd === 'replay') {
             const { text, ok } = await replayFor(args);
             return { content: [{ type: 'text', text }], ...(ok ? {} : { isError: true }) };
@@ -458,6 +472,10 @@ export async function serveMcp(sessionName: string, start: StartOptions) {
                 { type: 'text', text: `${shot.url} · ${shot.width}×${shot.height}` },
               ],
             };
+          }
+          if (tool.cmd === 'inspect' && args.shot) {
+            const seen = JSON.parse(text) as { text: string; png?: string };
+            return { content: [...said, { type: 'text', text: seen.text }, ...(seen.png ? [{ type: 'image', data: seen.png, mimeType: 'image/png' }] : [])] };
           }
           if (tool.cmd === 'source') {
             const max = Number(args.max_chars) > 0 ? Number(args.max_chars) : 100_000;

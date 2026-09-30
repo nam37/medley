@@ -16,7 +16,7 @@ import {
   type KeyEvent,
   type PasteEvent,
 } from '@opentui/core';
-import { saveScreenshot, STALE_HINT, type Reply, type SessionEvent } from '../client.ts';
+import { saveInspection, saveScreenshot, STALE_HINT, type Reply, type SessionEvent } from '../client.ts';
 import type { RecordingStatus } from '../script.ts';
 import type { TalkEvent } from '../talk.ts';
 import { resolve } from 'node:path';
@@ -84,7 +84,7 @@ type Tone = 'info' | 'ok' | 'warn' | 'error' | 'agent';
 const TONE = { info: THEME.text, ok: THEME.ok, warn: THEME.warn, error: THEME.error, agent: THEME.agent };
 
 // Commands whose result is a report to read, shown in a box: what the box is called.
-const REPORTS: Record<string, string> = { audit: 'accessibility', console: 'console', network: 'network', extract: 'data', record: 'the script', expect: 'checks' };
+const REPORTS: Record<string, string> = { audit: 'accessibility', console: 'console', network: 'network', extract: 'data', record: 'the script', expect: 'checks', inspect: 'the element' };
 
 const HINTS = 'Tab select · Enter open · l refs · o address · ← back · / find · v grid · ? keys · q quit';
 const BADGE = ' medley ';
@@ -108,6 +108,7 @@ const HELP = [
   '/, then n N        find text, then the next or previous match',
   ':                  run a command: press Escape, wait 2, select 6 High, …',
   "                   audit checks accessibility; console, network: the page's errors;",
+  '                   inspect looks closely at the selected ref: its styles, rules, listeners;',
   '                   record start … record stop writes down what you do, to replay;',
   '                   expect Thanks, expect --url /cart --no-errors: checks, kept in the script',
   'l, or click N refs  the page’s refs in a list: type to filter, Enter opens',
@@ -437,6 +438,8 @@ export class App {
     }
     if (quiet) return;
     if (cmd === 'screenshot') return this.say(saveScreenshot(reply.text, args.path as string | undefined), 'ok');
+    // A picture of the element, if one was asked for, is saved here; the report is shown as any other.
+    if (cmd === 'inspect' && args.shot) reply = { ...reply, text: saveInspection(reply.text, args.path as string | undefined) };
     // Reports of more than a line go in a box over the page, as page info does.
     const report = REPORTS[cmd];
     // A record that stopped shows its script; an expect of several things, how each came out.
@@ -493,7 +496,7 @@ export class App {
 
   /** Another client did something: say so, and look at the page again. */
   private onOther(e: SessionEvent) {
-    const looking = ['snapshot', 'status', 'screenshot', 'pictures', 'tabs', 'info', 'source', 'find', 'console', 'network', 'extract', 'audit', 'expect'];
+    const looking = ['snapshot', 'status', 'screenshot', 'pictures', 'tabs', 'info', 'source', 'find', 'console', 'network', 'extract', 'audit', 'expect', 'inspect'];
     if (looking.includes(e.cmd) || e.starting) return;
     if (e.summary.startsWith('listed the ')) return; // history, downloads: nothing on the page changed
     const who = e.client.startsWith('mcp') ? 'agent' : e.client;
@@ -758,6 +761,8 @@ export class App {
   private command(line: string) {
     try {
       const { words, flags } = splitFlags(tokenize(line));
+      // inspect by itself is about the selected ref.
+      if (words.length === 1 && words[0] === 'inspect' && this.page.selectedRef) words.push(String(this.page.selectedRef.ref));
       const { cmd, args, start } = parseCommand(words, flags);
       void this.run(cmd, args, { start });
     } catch (e) {
@@ -1523,6 +1528,8 @@ export class App {
         return 'answering the dialog';
       case 'audit':
         return 'checking the page for accessibility';
+      case 'inspect':
+        return `looking closely at ${label}`;
       case 'expect':
         return `checking for ${(Array.isArray(args.checks) ? (args.checks as Check[]) : []).map(checkName).join(', ')}`;
       case 'stop':

@@ -31,6 +31,8 @@ export interface CommandFlags {
   within?: string; // expect … --within <seconds>
   noErrors?: boolean; // expect --no-errors
   checks?: [string, string][]; // expect's other checks, in order: ['url', '/cart'], ['checked', 'checkbox Agree']
+  shot?: string; // inspect <ref> --shot <file>
+  css?: string; // inspect <ref> --css gap,grid-template-columns
 }
 
 const FLAGS = new Set(['--links', '--diff', '--submit', '--hard', '--outline', '--full', '--new-tab', '--dom', '--reader', '--all', '--csv', '--json']);
@@ -39,6 +41,9 @@ const VALUE_FLAGS = new Set(['--for', '--gone', '--section']);
 // expect's own options (see checks.ts): they're options only in an expect, and words anywhere else.
 const EXPECT_FLAGS = new Set(['--no-errors']);
 const EXPECT_VALUE_FLAGS = new Set(['--count', '--within']);
+// inspect's: a file for a picture of the element, and more CSS properties to read.
+const INSPECT_VALUE_FLAGS = new Set(['--shot', '--css']);
+const NONE = new Set<string>();
 /** expect's checks that take a value, and may come several times: --url /cart --checked "checkbox Agree". */
 export const CHECK_FLAGS = new Set(['--url', '--title', '--value', ...STATES.map((s) => `--${s}`)]);
 
@@ -103,12 +108,13 @@ export function splitFlags(words: (string | Word)[]): { words: string[]; flags: 
   const key = (w: string) => w.slice(2).replace(/-(\w)/g, (_, c: string) => c.toUpperCase()); // --new-tab → newTab
   const list = words.map((w) => (typeof w === 'string' ? { text: w, quoted: '' } : w));
   const expecting = list[0]?.text === 'expect';
+  const own = expecting ? EXPECT_VALUE_FLAGS : list[0]?.text === 'inspect' ? INSPECT_VALUE_FLAGS : NONE;
   const checks: [string, string][] = [];
   for (let i = 0; i < list.length; i++) {
     const { text, quoted } = list[i];
     const more = i + 1 < list.length;
     if (!quoted && (FLAGS.has(text) || (expecting && EXPECT_FLAGS.has(text)))) flags[key(text)] = true;
-    else if (!quoted && more && (VALUE_FLAGS.has(text) || (expecting && EXPECT_VALUE_FLAGS.has(text)))) flags[key(text)] = list[++i].text;
+    else if (!quoted && more && (VALUE_FLAGS.has(text) || own.has(text))) flags[key(text)] = list[++i].text;
     else if (!quoted && more && expecting && CHECK_FLAGS.has(text)) checks.push([text.slice(2), list[++i].text]);
     else rest.push(text);
   }
@@ -221,6 +227,12 @@ export function parseCommand([command, ...rest]: string[], flags: CommandFlags =
     }
     case 'audit':
       return { cmd: 'audit', args: { json: flags.json } };
+    case 'inspect': {
+      need(1, 'inspect <ref or name> [--shot <file>] [--css <property,…>] [--json]');
+      const css = flags.css?.split(',').map((p) => p.trim()).filter(Boolean);
+      // The picture is saved by whoever asked, where they are (the session may run elsewhere).
+      return { cmd: 'inspect', args: { ref: rest.join(' '), json: flags.json, shot: flags.shot !== undefined, path: flags.shot, css } };
+    }
     case 'record': {
       const action = rest[0] ?? 'status';
       if (action === 'start') return { cmd: 'record', args: { action, file: rest[1] ? resolve(rest[1]) : undefined } };

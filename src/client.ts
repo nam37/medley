@@ -346,6 +346,20 @@ async function spawnDaemon(name: string, opts: StartOptions): Promise<SessionInf
  * Save a `screenshot` reply's PNG, to `path` or a timestamped name in the
  * current directory; returns what to tell the user.
  */
+/**
+ * An inspect's report, with its picture of the element (if one was asked
+ * for) saved to `path`, or a file named for the time, saying where.
+ */
+export function saveInspection(reply: string, path?: string): string {
+  const r = JSON.parse(reply) as { text: string; png?: string; width?: number; height?: number };
+  if (!r.png) return r.text;
+  const file = resolve(path || `inspect-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.png`);
+  writeFileSync(file, Buffer.from(r.png, 'base64'));
+  // As data, the picture's file goes in with the rest.
+  if (r.text.startsWith('{')) return JSON.stringify({ ...JSON.parse(r.text), picture: file }, null, 1);
+  return `${r.text}\n${'picture'.padEnd(10)} ${r.width}×${r.height}, saved to ${file}`;
+}
+
 export function saveScreenshot(reply: string, path?: string): string {
   const shot = JSON.parse(reply) as { png: string; width: number; height: number; url: string };
   const file = resolve(path || `screenshot-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.png`);

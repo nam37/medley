@@ -333,6 +333,14 @@ try {
   await keys('x');
   await until('the audit to close', (f) => !f.includes('accessibility · any key closes'));
 
+  // :inspect looks closely at the selected ref, in a box: its selector, styles, and the listeners that hear it.
+  mockInput.pressKey(':');
+  await mockInput.typeText('inspect 7');
+  mockInput.pressEnter();
+  show(':inspect shows the element', await until('the inspection', (f) => f.includes('the element · any key closes') && f.includes('selector') && f.includes('listeners')));
+  await keys('x');
+  await until('the inspection to close', (f) => !f.includes('the element · any key closes'));
+
   // :expect with several checks shows how each came out; one that isn't so says what is, in the status line.
   mockInput.pressKey(':');
   await mockInput.typeText('expect --title "test app" --count 1 button Say hello');

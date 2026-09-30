@@ -184,6 +184,8 @@ medley extract items <n> [--csv]    one run of items: each one's text, and its l
 medley console [--all]              the errors and warnings the page logged (--all: every message)
 medley network [--all]              the page's failed requests (--all: every request)
 medley audit [--json]               check the page's accessibility, with the refs of what's wrong
+medley inspect <ref> [--shot <file>]  one element, closely: markup, selector, name, box, why it can't be
+                                    seen or clicked, styles, CSS rules and listeners with file and line
 medley expect <text>                check the text is on the page (waiting up to 5s), or fail
 medley expect --gone <text>         check it isn't
 medley expect --count <n> <text>    check it's there n times ("button Remove" counts buttons by name)
@@ -284,9 +286,12 @@ Some things are there to keep an agent's context small and its steps sure:
 
 Scripts and checks for web work are there too: `browser_record` and
 `browser_replay` (see Scripts, below), `browser_audit`, `browser_reload` with
-`diff`, and `browser_expect`, which tells an agent in one call whether its
-change worked (see Building a site): some text is there or gone, the address,
-what fields hold, whether a button is enabled, that nothing logged an error.
+`diff`, `browser_inspect`, which looks closely at one element (why it can't be
+clicked, which CSS rule colors it and where that rule is, which script hears a
+click on it), and `browser_expect`, which tells an agent in one call whether
+its change worked: some text is there or gone, the address, what fields hold,
+whether a button is enabled, that nothing logged an error. Both are under
+Building a site, below.
 
 A few of them save an agent round trips: `browser_fill` fills a whole form and
 reports once, `browser_wait` with `text` waits for something to show up (or go
@@ -373,6 +378,63 @@ expect Thanks
 
 ### Building a site
 
+- **`inspect`** (MCP `browser_inspect`) looks closely at one element, as a
+  browser's developer tools would, for finding out why it looks or behaves as
+  it does and where in the source to change it:
+
+  ```
+  $ medley inspect button Place order
+  [14 button "Place order"]
+  <button id="order" class="btn primary" type="button" disabled>
+  in         body › main › form#checkout › p.actions
+  selector   #order
+  name       "Place order", from its text · role button (from its tag)
+  states     disabled
+  box        106.6×33 at 24,189.9 · in the window
+  visible    yes
+  clickable  no: it's disabled
+  colors     #ffffff on #0a7d5e · contrast 5.1:1
+  font       600 13.3px/normal Arial · text-align center
+  layout     display block · padding 8px 16px · border 1px solid #0a7d5e · border-radius 6px
+             an item of p.actions (flex row, align-items center, gap 12px): flex 0 1 auto
+  other      cursor not-allowed · opacity 0.5
+  rules      .btn.primary { background: #0a7d5e; color: #ffffff }  app.css:9
+             button:disabled { opacity: 0.5; cursor: not-allowed }  app.css:10
+             @media (min-width: 600px) .btn { font-weight: 600 }  app.css:12
+             .btn { padding: 8px 16px; border: 1px solid #0a7d5e; border-radius: 6px; colour: red (not valid: ignored) }  app.css:3
+             from body: body { font-family: Georgia, serif; color: #1f2a33 }  app.css:1
+  listeners  click  cart.js:42
+             click, on form#checkout  cart.js:12
+  html       <button id="order" class="btn primary" type="button" disabled>Place order</button>
+  ```
+
+  - **Where it is:** what it's inside of, and a CSS selector that finds it
+    and nothing else (its id, a test id, its classes, or a path), to search
+    the source for.
+  - **What it's called**, and where the name comes from: its text, a label,
+    `aria-label`, or only a placeholder.
+  - **Whether it can be seen and clicked, and why not:** `display: none` on
+    something around it, no size, cut off by an `overflow: hidden` box,
+    outside the window, covered by a banner (and which), disabled,
+    `pointer-events: none`. Nothing is scrolled to find out.
+  - **How it looks:** its colors and their contrast, font, box and layout,
+    and its part in a flex row or a grid. `--css gap,min-width` reads more
+    properties.
+  - **The rules behind that:** the page's own CSS rules that apply to it,
+    strongest first, each with its stylesheet and line, the media query it's
+    in, and any declaration the browser ignored as not valid; then the rules
+    of what's around it that it inherits from. A minified file's line comes
+    with its column.
+  - **What hears it:** the event listeners on it, and those around it for
+    clicks, keys and input, each with its script and line. A framework that
+    listens for everything at the top (React) shows as one line there.
+  - `--shot order.png` saves a picture of just the element (small ones at
+    twice their size); over MCP, `screenshot: true` returns it as an image.
+    `--json` gives all of it as data. In the terminal UI, `:inspect` is about
+    the selected ref.
+  - A password's value is never shown, in the report or in the markup. The
+    rules and listeners come from the browser's own debugger and CSS tools,
+    which are on only for the moment it takes to read them.
 - **`expect`** (MCP `browser_expect`) says whether a change worked, so nobody
   has to read the page again and judge. It waits up to 5 seconds (`--within
   <seconds>` for longer) for what it's asked to be so, and fails, with exit
@@ -593,7 +655,7 @@ agent acting in the same session, reload, a file prompt, the working badge,
 a masked password prompt, a download, bookmarks and history, the refs list, find, a command,
 a mouse click, back, a `confirm()`, a page that moves on by itself, the picture
 viewer, page info, the source view, recording a script (the `● rec`
-badge, the script's box), `:audit`, `:expect`, the help overlay, and a search from the
+badge, the script's box), `:audit`, `:inspect`, `:expect`, the help overlay, and a search from the
 address prompt. It prints each frame as it goes.
 `bun run test:stability` checks medley's word when things go wrong, against
 pages served for it: typing into comboboxes that won't take the focus or open
@@ -613,6 +675,13 @@ states, the focus, errors logged and requests failed, and what comes a moment
 later, each both passing and failing; then from the command line, recorded
 into a script, replayed (with a wrong password too), as a Playwright test, and
 asked for over MCP.
+`bun run test:inspect` checks `inspect`, against a page served with its own
+stylesheet and script: the selector, the name and where it comes from, the
+box, each reason something can't be seen or clicked, the rules (their order,
+files and lines, a media query, an invalid declaration, inherited ones) and
+the listeners (on it, around it, inline ones), in a shadow root and in frames
+from this site and another, a password kept out, then the picture from the
+command line and over MCP.
 `bun run test:dev` checks what developers lean on: `audit` against
 `test/a11y.html` (one of each problem, beside the same things done right),
 `expect`, recording the demo shop's form and replaying it in a fresh session,

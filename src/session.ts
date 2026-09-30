@@ -9,6 +9,7 @@ import { auditText, type AuditResult } from './audit.ts';
 import { Browser, NoAnswer, sleep, type Dialog, type DownloadEvent, type LaunchOptions, type Page, type RequestEntry } from './browser.ts';
 import { countOf, meansOn, type Check, type State } from './checks.ts';
 import { diffLines, fencedLines, whereIs } from './diff.ts';
+import { inspectText, type Found, type Inspection } from './inspect.ts';
 import { ABOUT, siteOf, type About, type PageInfo } from './info.ts';
 import { parseKey } from './keys.ts';
 import { matchRef, parseLabel } from './names.ts';
@@ -27,7 +28,10 @@ const UNSTUCK = 'the page was stuck in a script and answered nothing; medley sto
 const read = (file: string) => readFileSync(fileURLToPath(new URL(file, import.meta.url)), 'utf8');
 const EXTRACT = read('./extract.js');
 const ACTIONS = read('./page-actions.js');
-const AUDIT = read('./audit.js');
+// Page-side helpers the two below share: each is a script with LIB as a name it may use.
+const LIB = read('./page-lib.js');
+const AUDIT = `((LIB) => ${read('./audit.js')})(${LIB})`;
+const INSPECT = `((LIB) => ${read('./inspect.js')})(${LIB})`;
 
 /**
  * A diff says what changed, which a full page doesn't, so prefer it unless
@@ -1215,6 +1219,119 @@ export class Session {
     return JSON.stringify({ ...result, findings }, null, 1);
   }
 
+  // ---- one element, looked at closely ---------------------------------------------------
+
+  /**
+   * What a developer would look up about an element (see inspect.js and
+   * inspect.ts): its markup and where it sits, its name and role, its box,
+   * whether it can be seen and clicked (and why not), the styles it ends up
+   * with, the CSS rules behind them and the event listeners that hear it,
+   * each with where it's written. `css` names more properties to read. With
+   * `shot`, a picture of just the element comes too, and the result is JSON
+   * ({ text, png, width, height }). Nothing on the page is changed or
+   * scrolled.
+   */
+  async inspect(client: string, ref: number, { json = false, shot = false, css = [] as string[] } = {}): Promise<string> {
+    await this.checkRefs(client);
+    const { frame } = this.target(ref);
+    const found = await this.evalRef<Found>(ref, (local) => `${INSPECT}(${local}, ${JSON.stringify(css)})`);
+    if (found.error) throw new Error(found.error);
+    const { window: _own, pointer, error: _none, ...rest } = found;
+    const notes: string[] = [];
+
+    // Where it is in the page's own window: a frame from another site knows only its own.
+    let win = found.window;
+    let { x, y } = found.box;
+    if (frame) {
+      for (const f of this.page.frameChain(frame)) {
+        const at = await this.page.evaluateIn<{ x: number; y: number; error?: string }>(this.page.parentOf(f), `(${ACTIONS}).frameBox(${JSON.stringify(f)}, false)`);
+        if (at.error) throw new Error(at.error);
+        x += at.x;
+        y += at.y;
+      }
+      win = await this.page.evaluate<Found['window']>('({ w: innerWidth, h: innerHeight, sx: Math.round(scrollX), sy: Math.round(scrollY) })');
+    }
+    const { w, h } = found.box;
+    const round = (n: number) => Math.round(n * 10) / 10;
+    const box = { x: round(x + win.sx), y: round(y + win.sy), w, h };
+    const out = [y + h <= 0 && 'above', y >= win.h && 'below', x + w <= 0 && 'left of', x >= win.w && 'right of'].filter(Boolean);
+    const whole = x >= 0 && y >= 0 && x + w <= win.w && y + h <= win.h;
+    const place = out.length ? `${out.join(' and ')} the window` : whole ? 'in the window' : 'partly in the window';
+
+    const st = await this.callRef<ElState>('state', ref);
+    if (st.error) throw new Error(st.error);
+    const flag = (on: boolean | null, yes: string, no = '') => (on === null ? [] : on ? [yes] : no ? [no] : []);
+    const states = [
+      ...flag(st.checked, 'checked', 'unchecked'),
+      ...flag(st.selected, 'selected'),
+      ...flag(st.pressed, 'pressed'),
+      ...flag(st.expanded, 'expanded', 'collapsed'),
+      ...flag(st.disabled, 'disabled'),
+      ...flag(st.focused, 'focused'),
+    ];
+
+    // Whether a click would land on it, as things are: nothing is scrolled to find out.
+    let clickable = 'yes';
+    if (found.hidden) clickable = "no: it can't be seen";
+    else if (st.disabled) clickable = "no: it's disabled";
+    else if (pointer) clickable = 'no: pointer-events is none, so clicks go through it to what is behind';
+    else {
+      try {
+        await this.locate(ref, false);
+      } catch (e) {
+        const why = (e instanceof Covered ? this.coveredError(client, e) : (e as Error)).message.replace(/^ref \d+ /, '');
+        clickable = /^isn't on screen/.test(why) ? "not where it is: it's outside the window (click scrolls to it first)" : `no: it ${why}`;
+      }
+    }
+
+    const label = this.label(client, ref);
+    const inspection: Inspection = {
+      ref,
+      label,
+      ...rest,
+      frame: !!frame,
+      box,
+      ...(st.value === null ? {} : { value: st.secret ? (st.value ? '********' : '') : st.value }),
+      states,
+      place,
+      visible: found.hidden ? `no: ${found.hidden}` : 'yes',
+      clickable,
+      notes,
+    };
+
+    // What the page's script can't see: the browser is asked, about the nodes inspect.js left for it.
+    try {
+      inspection.rules = await this.page.rulesOf('window.__medleyInspect.el', frame);
+    } catch (e) {
+      notes.push(`its CSS rules couldn't be read: ${(e as Error).message}`);
+    }
+    try {
+      const around = ['', ...[...found.path].reverse(), 'html', 'the document', 'the window'];
+      const heard = await this.page.listenersOf('window.__medleyInspect.nodes', frame);
+      inspection.listeners = heard.map((l) => ({ ...l, on: around[l.depth] ?? 'something around it' }));
+    } catch (e) {
+      notes.push(`its event listeners couldn't be read: ${(e as Error).message}`);
+    }
+    await this.page.evaluateIn(frame, 'delete window.__medleyInspect').catch(() => {});
+
+    // A file and line, short. What's written in the page's own HTML (a <style>, an onclick) may have no file name to show.
+    const short = (where: string) => shortWhere(where).replace(/^(?=:\d+$)/, '(this page)');
+    const text = json ? JSON.stringify(inspection, null, 1) : inspectText(inspection, short);
+    if (!shot) return text;
+    if (found.hidden || w < 1 || h < 1) return JSON.stringify({ text: `${text}\nnote: no picture: there is nothing of it to see` });
+    // Just the element, with a little of what's around it; small things at twice the size, to be legible.
+    const pad = 8;
+    const clip = {
+      x: Math.max(0, box.x - pad),
+      y: Math.max(0, box.y - pad),
+      width: Math.min(w + 2 * pad, 2000),
+      height: Math.min(h + 2 * pad, 2000),
+      scale: Math.max(w, h) < 600 ? 2 : 1,
+    };
+    const picture = await this.page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip });
+    return JSON.stringify({ text, png: picture.data, width: Math.round(clip.width * clip.scale), height: Math.round(clip.height * clip.scale) });
+  }
+
   // ---- page info and source ---------------------------------------------------
 
   /** The connection, cookies and site data, what the page says about itself, and what loading it took (see info.ts). */
@@ -1716,8 +1833,13 @@ export class Session {
 
   /** callRef, giving the page `timeout` ms to answer (NoAnswer if it doesn't). */
   private askRef<T>(timeout: number | undefined, method: string, ref: number, ...args: unknown[]): Promise<T> {
+    return this.evalRef<T>(ref, (local) => `(${ACTIONS}).${method}(${[local, ...args].map((a) => JSON.stringify(a)).join(', ')})`, timeout);
+  }
+
+  /** Evaluate `code`, written for a ref's number in its own document, in the frame that document is in (see callRef). */
+  private evalRef<T>(ref: number, code: (local: number) => string, timeout?: number): Promise<T> {
     const { frame, doc, local } = this.target(ref);
-    const call = `(${ACTIONS}).${method}(${[local, ...args].map((a) => JSON.stringify(a)).join(', ')})`;
+    const call = code(local);
     const stale = `the frame ref ${ref} was in has loaded another page since; take a new snapshot`;
     const expression = frame
       ? `((window.__medley && window.__medley.doc) === ${JSON.stringify(doc)} ? ${call} : { error: ${JSON.stringify(stale)} })`

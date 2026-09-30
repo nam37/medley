@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { readSessionInfo, saveScreenshot, send, STALE_HINT } from './client.ts';
+import { readSessionInfo, saveInspection, saveScreenshot, send, STALE_HINT } from './client.ts';
 import { colorize } from './color.ts';
 import { CHECK_FLAGS, parseCommand, toUrl, UsageError } from './commands.ts';
 import { serveMcp } from './mcp.ts';
@@ -55,6 +55,11 @@ session commands:
   network [--all]                 the page's failed requests (--all: every request)
   audit [--json]                  check the page's accessibility: pictures without text, controls
                                   without names, too little contrast, mouse-only controls, …
+  inspect <ref> [--shot <file>]   one element, looked at closely: its markup and selector, name and
+                                  role, box, whether it can be seen and clicked (and why not), its
+                                  styles and the CSS rules behind them, and the event listeners that
+                                  hear it, each with its file and line (--shot: a picture of just it;
+                                  --css gap,order: more properties; --json: as data)
   expect <text>                   check the text is on the page (waiting up to 5s), or fail
   expect --gone <text>            check it isn't; in a script, these are its checks
   expect --count <n> <text>       check it's there n times; "button Remove" counts buttons with
@@ -140,6 +145,8 @@ const opts = {
   within: undefined as string | undefined,
   noErrors: false,
   checks: [] as [string, string][],
+  shot: undefined as string | undefined,
+  css: undefined as string | undefined,
   verbose: false,
   hot: false,
   color: !!process.stdout.isTTY && !process.env.NO_COLOR,
@@ -174,6 +181,8 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--count') opts.count = value();
   else if (a === '--within') opts.within = value();
   else if (a === '--no-errors') opts.noErrors = true;
+  else if (a === '--shot') opts.shot = value();
+  else if (a === '--css') opts.css = value();
   else if (CHECK_FLAGS.has(a)) opts.checks.push([a.slice(2), value()]);
   else if (a === '--verbose') opts.verbose = true;
   else if (a === '--hot') opts.hot = true;
@@ -237,6 +246,7 @@ async function run(): Promise<string> {
   if (opts.max) args.max = opts.max;
   const reply = send(opts.session, { cmd, args, client }, starts ? start : undefined);
   if (cmd === 'screenshot') return saveScreenshot(await reply, args.path as string | undefined);
+  if (cmd === 'inspect' && args.shot) return saveInspection(await reply, args.path as string | undefined);
   if (cmd !== 'stop') return reply;
   return reply.catch((e: Error) => (e.message.startsWith('no browser session') ? 'no session was running' : Promise.reject(e)));
 }
@@ -273,7 +283,7 @@ if (!command) {
   try {
     const text = await run();
     // Page info and a page's source aren't page text: printed as they are, for reading, saving or piping.
-    const plain = opts.json || ['source', 'info', 'console', 'network', 'extract', 'audit', 'record', 'expect'].includes(command);
+    const plain = opts.json || ['source', 'info', 'console', 'network', 'extract', 'audit', 'record', 'expect', 'inspect'].includes(command);
     process.stdout.write((opts.color && !plain ? colorize(text) : text) + '\n');
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'EPIPE') process.exit(0);

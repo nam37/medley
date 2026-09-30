@@ -105,7 +105,7 @@ const server = Bun.serve({
     queue = run.catch(() => {});
     try {
       const text = await run;
-      announce({ client, cmd: command.cmd, ok: true, summary: summarize(command, text), refs: refs.length ? refs : undefined });
+      announce({ client, cmd: command.cmd, ok: true, summary: summarize(command, text, client), refs: refs.length ? refs : undefined });
       const state = command.state ? { ...session.view(client), recording: recording?.status ?? null } : undefined;
       return Response.json({ ok: true, text, state, messages: forAgent(client) });
     } catch (e) {
@@ -164,7 +164,7 @@ const PAGE_COMMANDS = new Set([
 async function resolveNames({ cmd, args }: Command, client: string) {
   if (!args) return;
   const at = (v: unknown) => session.resolveRef(client, v);
-  if (['click', 'type', 'select', 'hover', 'upload'].includes(cmd) && args.ref !== undefined) args.ref = await at(args.ref);
+  if (['click', 'type', 'select', 'hover', 'upload', 'inspect'].includes(cmd) && args.ref !== undefined) args.ref = await at(args.ref);
   if (cmd === 'drag' && args.from !== undefined) args.from = await at(args.from);
   if (cmd === 'scroll' && args.to !== undefined && !/^(down|up|top|bottom)$/.test(String(args.to))) args.to = await at(args.to);
   if (cmd === 'fill' && args.fields && typeof args.fields === 'object') {
@@ -185,6 +185,7 @@ function refsOf({ cmd, args = {} }: Command): number[] {
     case 'select':
     case 'hover':
     case 'upload':
+    case 'inspect':
       return num(args.ref);
     case 'scroll':
       return num(args.to);
@@ -234,7 +235,7 @@ function logTiming({ cmd, args }: Command, client: string, ms: number) {
   console.log(`${new Date().toISOString()} ${client} ${what} ${Math.round(ms)}ms${parts ? ` (${parts})` : ''}`);
 }
 
-function summarize({ cmd, args }: Command, text: string): string {
+function summarize({ cmd, args }: Command, text: string, client: string): string {
   if (cmd === 'goto') return `opened ${args?.url}`;
   if (cmd === 'snapshot') return 'looked at the page';
   if (cmd === 'screenshot') return 'took a screenshot';
@@ -248,6 +249,7 @@ function summarize({ cmd, args }: Command, text: string): string {
   if (cmd === 'network') return 'looked at the network';
   if (cmd === 'extract') return 'took data from the page';
   if (cmd === 'audit') return 'checked the page for accessibility';
+  if (cmd === 'inspect') return `looked closely at ${session.labelsFor(client).get(Number(args?.ref)) ?? 'an element'}`;
   if (cmd === 'history' && args?.n === undefined) return 'listed the history';
   return text.split('\n')[0];
 }
@@ -355,6 +357,12 @@ async function dispatch({ cmd, args = {} }: Command, client: string): Promise<st
       return session.expect(client, checksOf(args), Math.min(Number(args.seconds) || 5, 60));
     case 'audit':
       return session.audit(client, { json: !!args.json });
+    case 'inspect':
+      return session.inspect(client, ref(args.ref), {
+        json: !!args.json,
+        shot: !!args.shot,
+        css: Array.isArray(args.css) ? args.css.map(String).slice(0, 40) : [],
+      });
     case 'record':
       return record(String(args.action ?? 'status'), args.file === undefined ? undefined : String(args.file));
     case 'dialog':

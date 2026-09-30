@@ -194,6 +194,33 @@ export interface RequestEntry {
   loader: string;
 }
 
+/** An event listener on an element or on something around it (see Page.listenersOf). */
+export interface ListenerInfo {
+  depth: number; // 0: the element itself; then what it's inside of, outwards, its document, and last its window
+  type: string;
+  capture: boolean;
+  once: boolean;
+  passive: boolean;
+  where?: string; // the handler's script and line
+  column?: number;
+}
+
+/** A CSS rule that applies to an element, as its stylesheet has it (see Page.rulesOf). */
+export interface RuleInfo {
+  selector: string;
+  declarations: string[]; // "color: red !important"
+  where?: string; // its stylesheet and line; none for one the page's script made
+  column?: number;
+  media?: string;
+  inherited?: number; // from what it's inside of: 1 its parent, 2 the one around that
+}
+
+// The properties an element takes from what it's inside of: what's worth telling of an ancestor's rules.
+const INHERITED = new Set([
+  'color', 'font', 'font-family', 'font-size', 'font-weight', 'font-style', 'font-variant', 'line-height', 'letter-spacing',
+  'word-spacing', 'text-align', 'text-transform', 'text-indent', 'white-space', 'visibility', 'cursor', 'direction', 'list-style',
+]);
+
 const MAX_CONSOLE = 500;
 const MAX_REQUESTS = 2000;
 // A page being developed: its console is heard from the start (see Page.watchConsole).
@@ -755,6 +782,123 @@ export class Page {
   /** Evaluate in medley's world in a child frame (null: the main frame). */
   async evaluateIn<T>(frameId: string | null, expression: string, timeout?: number): Promise<T> {
     return (await this.run(expression, true, frameId, timeout)).value as T;
+  }
+
+  /**
+   * The event listeners on a list of nodes (the array `expression` gives in
+   * medley's world of `frameId`: an element, then what's around it, out to
+   * its document) and on their window, each with where its handler is
+   * written. `depth` is the node's place in the list; the window comes last.
+   * The page's script can't list these, so the browser's debugger is asked,
+   * and is on only for the moment it takes to name the scripts.
+   */
+  async listenersOf(expression: string, frameId: string | null): Promise<ListenerInfo[]> {
+    const session = frameId ? (this.sessionOf(frameId) ?? this.sessionId) : this.sessionId;
+    const ask = (method: string, params: object = {}) => this.cdp.send(method, params, session, 5000);
+    const { objectId } = await this.run(expression, false, frameId);
+    if (!objectId) return [];
+    const scripts = new Map<string, string>();
+    const off = this.cdp.on((m) => {
+      if (m.sessionId === session && m.method === 'Debugger.scriptParsed') scripts.set(m.params.scriptId, m.params.url);
+    });
+    try {
+      const { result } = await ask('Runtime.getProperties', { objectId, ownProperties: true });
+      const nodes: string[] = [];
+      for (const p of result) if (/^\d+$/.test(p.name) && p.value?.objectId) nodes[Number(p.name)] = p.value.objectId;
+      // A listener is told to the world its handler lives in: ask as the page's own, not as medley's.
+      const own = async (id: string): Promise<string | null> => {
+        const { node } = await ask('DOM.describeNode', { objectId: id });
+        const { object } = await ask('DOM.resolveNode', { backendNodeId: node.backendNodeId });
+        return object.objectId ?? null;
+      };
+      const targets = await Promise.all(nodes.map((id) => own(id).catch(() => null)));
+      const doc = targets.at(-1);
+      const win = doc ? await ask('Runtime.callFunctionOn', { objectId: doc, functionDeclaration: 'function () { return this.defaultView; }' }).catch(() => null) : null;
+      targets.push(win?.result?.objectId ?? null);
+      const lists = await Promise.all(
+        targets.map((id) => (id ? ask('DOMDebugger.getEventListeners', { objectId: id }).then((r) => r.listeners as any[], () => []) : [])),
+      );
+      if (lists.some((l) => l.length)) {
+        // Turning the debugger on names every script; it never pauses the page, and goes off at once.
+        const on = ask('Debugger.enable').catch(() => {});
+        const skip = ask('Debugger.setSkipAllPauses', { skip: true }).catch(() => {});
+        await Promise.all([on, skip]);
+        await ask('Debugger.disable').catch(() => {});
+      }
+      return lists.flatMap((list, depth) =>
+        list.map((l) => {
+          const url = scripts.get(l.scriptId);
+          return {
+            depth,
+            type: String(l.type),
+            capture: !!l.useCapture,
+            once: !!l.once,
+            passive: !!l.passive,
+            ...(url ? { where: `${url}:${l.lineNumber + 1}`, column: l.columnNumber + 1 } : {}),
+          };
+        }),
+      );
+    } finally {
+      off();
+      await ask('Runtime.releaseObject', { objectId }).catch(() => {});
+    }
+  }
+
+  /**
+   * The CSS rules that apply to an element (the one `expression` gives in
+   * medley's world of `frameId`), the strongest first, each with where it's
+   * written; then the rules of what it's inside of that it inherits from
+   * (`inherited`: 1 for its parent, 2 for the one around that). Only the
+   * page's own rules, not the browser's defaults. The browser's CSS tools
+   * are on only while this reads.
+   */
+  async rulesOf(expression: string, frameId: string | null): Promise<RuleInfo[]> {
+    const session = frameId ? (this.sessionOf(frameId) ?? this.sessionId) : this.sessionId;
+    const ask = (method: string, params: object = {}) => this.cdp.send(method, params, session, 5000);
+    const { objectId } = await this.run(expression, false, frameId);
+    if (!objectId) return [];
+    const sheets = new Map<string, { url: string; line: number }>();
+    const off = this.cdp.on((m) => {
+      if (m.sessionId !== session || m.method !== 'CSS.styleSheetAdded') return;
+      const h = m.params.header;
+      sheets.set(h.styleSheetId, { url: h.sourceURL || '', line: h.isInline ? (h.startLine ?? 0) : 0 });
+    });
+    try {
+      await ask('DOM.enable');
+      await ask('CSS.enable');
+      await ask('DOM.getDocument', { depth: 0 });
+      const { nodeId } = await ask('DOM.requestNode', { objectId });
+      const matched = await ask('CSS.getMatchedStylesForNode', { nodeId });
+      const rule = (m: any, inherited = 0): RuleInfo | null => {
+        const r = m.rule;
+        if (r?.origin !== 'regular') return null;
+        // What's written in the rule: a shorthand's longhands, which the browser adds, have no text of their own.
+        const written = ((r.style?.cssProperties ?? []) as any[]).filter((p) => p.text !== undefined && !p.disabled);
+        const kept = inherited ? written.filter((p) => INHERITED.has(p.name)) : written;
+        if (!kept.length) return null;
+        const declarations = kept.map((p) => `${String(p.text).trim().replace(/;$/, '')}${p.parsedOk === false ? ' (not valid: ignored)' : ''}`);
+        const sheet = sheets.get(r.styleSheetId);
+        const range = r.selectorList?.selectors?.[0]?.range ?? r.style?.range;
+        const media = ((r.media ?? []) as any[]).filter((q) => q.source === 'mediaRule').map((q) => String(q.text));
+        return {
+          selector: String(r.selectorList?.text ?? ''),
+          declarations,
+          ...(sheet?.url ? { where: `${sheet.url}:${sheet.line + (range?.startLine ?? 0) + 1}`, column: (range?.startColumn ?? 0) + 1 } : {}),
+          ...(media.length ? { media: media.join(' and ') } : {}),
+          ...(inherited ? { inherited } : {}),
+        };
+      };
+      const strongestFirst = (list: any[] | undefined, inherited = 0) =>
+        [...(list ?? [])].reverse().flatMap((m) => rule(m, inherited) ?? []);
+      const own = strongestFirst(matched.matchedCSSRules);
+      const above = ((matched.inherited ?? []) as any[]).flatMap((entry, i) => strongestFirst(entry.matchedCSSRules, i + 1));
+      return [...own, ...above];
+    } finally {
+      off();
+      await ask('CSS.disable').catch(() => {});
+      await ask('DOM.disable').catch(() => {});
+      await ask('Runtime.releaseObject', { objectId }).catch(() => {});
+    }
   }
 
   /**

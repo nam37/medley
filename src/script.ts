@@ -17,7 +17,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
 import { sleep } from './browser.ts';
 import { checksOf, countOf, meansOn, type Check } from './checks.ts';
-import { request, type Command, type StartOptions } from './client.ts';
+import { CommandError, request, type Command, type StartOptions } from './client.ts';
 import { parseCommand, splitFlags, tokenize, type Word } from './commands.ts';
 import { matchRef, nameFor, parseLabel } from './names.ts';
 
@@ -324,22 +324,50 @@ export function stepCommand(step: ScriptStep, vars: Record<string, string | unde
 /**
  * Run a script's steps in the named session, one after another, stopping at
  * the first that fails. A name not on the page yet is looked for again for a
- * few seconds, since pages often draw a moment after they load.
+ * few seconds, since pages often draw a moment after they load. With
+ * `keepGoing`, an expect that fails doesn't stop the rest: a check says
+ * something of the page and changes nothing, so those after it still mean
+ * what they did (a failed action still stops them: they'd be acting on a page
+ * that isn't where the script thinks). `stop` is asked before each step, and
+ * ends the run when it says so. What the person watching says meanwhile (to
+ * an agent: see talk.ts) comes with the steps' answers, and goes to `heard`.
  */
 export async function replay(
   session: string,
   steps: ScriptStep[],
-  opts: { client: string; start?: StartOptions; vars: Record<string, string | undefined>; onStep?: (r: StepResult, i: number) => void },
+  opts: {
+    client: string;
+    start?: StartOptions;
+    vars: Record<string, string | undefined>;
+    onStep?: (r: StepResult, i: number) => void;
+    keepGoing?: boolean;
+    stop?: () => boolean;
+    heard?: (messages: string[]) => void;
+    within?: number; // how long an expect that doesn't say waits, in seconds (the session's own: 5)
+  },
 ): Promise<StepResult[]> {
   const missing = scriptVars(steps).filter((v) => opts.vars[v] === undefined);
   if (missing.length) throw new Error(`the script reads ${missing.join(', ')} from the environment; set ${missing.length === 1 ? 'it' : 'them'} and run it again`);
   const results: StepResult[] = [];
   for (const [i, step] of steps.entries()) {
+    if (opts.stop?.()) break;
     const t0 = performance.now();
     let result: StepResult;
+    let check = false;
     try {
       const { cmd, args, start } = stepCommand(step, opts.vars);
-      const run = () => request(session, { cmd, args, client: opts.client }, start ? (opts.start ?? {}) : undefined);
+      check = cmd === 'expect';
+      if (check && opts.within && args.seconds === undefined) args.seconds = opts.within;
+      const run = async () => {
+        try {
+          const reply = await request(session, { cmd, args, client: opts.client }, start ? (opts.start ?? {}) : undefined);
+          if (reply.messages?.length) opts.heard?.(reply.messages);
+          return reply;
+        } catch (e) {
+          if (e instanceof CommandError && e.messages.length) opts.heard?.(e.messages);
+          throw e;
+        }
+      };
       const until = Date.now() + 5000;
       let text = '';
       for (;;) {
@@ -357,9 +385,63 @@ export async function replay(
     }
     results.push(result);
     opts.onStep?.(result, i);
-    if (!result.ok) break;
+    if (!result.ok && !(opts.keepGoing && check)) break;
   }
   return results;
+}
+
+// After a change to a page that has settled, a check that isn't so rarely becomes so: checks wait this long, not 5 seconds.
+export const CHECK_WAIT_S = 2;
+
+/** What a run of checks came to: what to say of it, how many failed, and how each step went (for the run after it). */
+export interface ChecksReport {
+  lines: string[];
+  failed: number;
+  outcome: Map<string, boolean>;
+}
+
+const stepKey = (s: ScriptStep) => `${s.line} ${s.text}`;
+
+/**
+ * How a script went, run as checks (replay with keepGoing), for saying again
+ * after every change to a page: what failed and why, what this change broke
+ * and what it fixed (against `before`, the run before it), and what wasn't
+ * run. What passed and passed before isn't listed. `since` names the change:
+ * "this save".
+ */
+export function checksReport(
+  results: StepResult[],
+  steps: ScriptStep[],
+  name: string,
+  { before, since = 'this change', interrupted = false }: { before?: Map<string, boolean>; since?: string; interrupted?: boolean } = {},
+): ChecksReport {
+  const outcome = new Map(results.map((r) => [stepKey(r.step), r.ok]));
+  const failed = results.filter((r) => !r.ok);
+  const notRun = steps.length - results.length;
+  const secs = `${(results.reduce((s, r) => s + r.ms, 0) / 1000).toFixed(1)}s`;
+  const head = failed.length
+    ? `${failed.length} of ${results.length} failed`
+    : notRun
+      ? `${results.length} passed, ${notRun} not run`
+      : `all ${results.length} passed`;
+  const lines = [`checks: ${head} (${name}, ${secs})`];
+  results.forEach((r, i) => {
+    const was = before?.get(stepKey(r.step));
+    if (r.ok) {
+      if (was === false) lines.push(`✓ ${i + 1} ${r.step.text} · fixed by ${since}`);
+      return;
+    }
+    const tag = was === true ? ` · broken by ${since}` : was === false ? ' · still failing' : '';
+    // Which page it was, and how long it waited, go without saying here.
+    const why = r.text.replace(/ \(after \d+s(; the page is ".*", \S+)?\)$/m, '');
+    lines.push(`✗ ${i + 1} ${r.step.text}${tag}`, ...why.split('\n').map((l) => `    ${l}`));
+  });
+  if (notRun) {
+    const last = results.at(-1);
+    const why = interrupted ? 'a newer change came first' : last && !last.ok ? `step ${results.length} has to work first` : 'the run was cut short';
+    lines.push(`· ${notRun === 1 ? '1 step' : `${notRun} steps`} not run: ${why}`);
+  }
+  return { lines, failed: failed.length, outcome };
 }
 
 /** A step's result in a line or a few: what it did, and any notes (errors the page logged). */
@@ -416,8 +498,11 @@ export async function bundleFailure(
 export function replaySummary(results: StepResult[], total: number, name: string): string {
   const last = results.at(-1);
   const secs = `${(results.reduce((s, r) => s + r.ms, 0) / 1000).toFixed(1)}s`;
+  const failed = results.filter((r) => !r.ok).length;
+  // Kept going past failed checks (see replay): it reached the end, but not all of it held.
+  if (failed && last?.ok) return `replayed ${name}: ${failed} of ${results.length === 1 ? '1 step' : `${results.length} steps`} failed, in ${secs}`;
   if (!last || last.ok) return `replayed ${name}: ${total === 1 ? '1 step' : `${total} steps`} in ${secs}`;
-  return `replay of ${name} stopped at step ${results.length} of ${total} (line ${last.step.line})`;
+  return `replay of ${name} stopped at step ${results.length} of ${total} (line ${last.step.line})${failed > 1 ? `; ${failed} steps failed` : ''}`;
 }
 
 // ---- as a Playwright test -----------------------------------------------------------

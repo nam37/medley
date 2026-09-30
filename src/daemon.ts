@@ -204,9 +204,13 @@ function refsOf({ cmd, args = {} }: Command): number[] {
 
 // ---- the agent and the person watching ------------------------------------------
 
-/** What the person watching said that this client hasn't heard, when the client is an agent (not a terminal UI). */
+/**
+ * What the person watching said that this client hasn't heard, when the
+ * client is an agent: not a terminal UI, and not medley's own watch or replay,
+ * which would take what was meant for the agent and have no one to tell it to.
+ */
 function forAgent(client: string): string[] | undefined {
-  if (client.startsWith('tui-')) return undefined;
+  if (client.startsWith('tui-') || client.startsWith('watch') || client === REPLAYER) return undefined;
   const lines = talk.take();
   return lines.length ? lines : undefined;
 }

@@ -209,8 +209,11 @@ medley status | stop
 
 medley replay <script> [--verbose]  do a script's steps again, stopping at the first that fails; what the
                                     page was then is saved as a bundle (--bundle <dir>, or --no-bundle)
+medley replay <script> --keep-going a failed expect doesn't stop the rest: every check is tried
 medley playwright <script>          print a script as a Playwright test
 medley watch [dir] [--hot]          reload the page when files change, and say how its text changed
+medley watch [dir] --check <script> and run the script as checks after every save: what failed, what the
+                                    save broke, what it fixed
 medley tui [url]                    the terminal UI, sharing the session
 medley snapshot <url> [--json]      one-off: fresh browser, print the page (or its raw model), exit
 medley mcp                          MCP server on stdio, sharing the session
@@ -289,7 +292,8 @@ Some things are there to keep an agent's context small and its steps sure:
 
 Scripts and checks for web work are there too: `browser_record` and
 `browser_replay` (see Scripts, below), `browser_audit`, `browser_reload` with
-`diff`, `browser_bundle`, which saves the page as it is to a folder for a bug
+`diff` (and with `checks`, a few lines of expects run after it: what changed
+and whether it still works, in one call), `browser_bundle`, which saves the page as it is to a folder for a bug
 report, `browser_inspect`, which looks closely at one element (why it can't be
 clicked, which CSS rule colors it and where that rule is, which script hears a
 click on it), and `browser_expect`, which tells an agent in one call whether
@@ -535,6 +539,62 @@ expect Thanks
   errors it logged. `--hot` is for dev servers that update the page
   themselves (Vite, webpack): it waits a moment instead of reloading. Folders
   like `node_modules` and `.git` don't count.
+- **Checks after every save:** `medley watch src --check checks.medley` runs
+  a script after each reload, and says whether the page still works: what
+  failed and why, what this save broke, and what it fixed. The script is any
+  medley script, written by hand or recorded, expects and actions both:
+
+  ```
+  # checks.medley
+  expect --no-errors
+  expect --count 2 link Item
+  expect Total: $10
+  click button Add
+  expect Added
+  ```
+
+  ```
+  $ medley watch site --check checks.medley
+  watching site: when files change, reloading "Shop" (…), saying how its text changed, and running checks.medley
+  checks: all 5 passed (checks.medley, 0.6s)
+
+  10:40:13 index.html changed · reloaded · +1 -2 lines
+  @@ main › # Shop @@
+    [1]Item Tent
+  - [2]Item Stove
+  - Total: $10
+  + Total: $12
+  checks: 2 of 5 failed (checks.medley, 4.7s)
+  ✗ 2 expect --count 2 link Item · broken by this save
+      expected 2 links called "Item", but there is 1 link called "Item": [1]Item Tent
+  ✗ 3 expect Total: $10 · broken by this save
+      expected "Total: $10" on the page, but it isn't there
+
+  10:40:26 index.html changed · reloaded · +1 -1 lines
+  …
+  checks: 1 of 5 failed (checks.medley, 2.7s)
+  ✗ 2 expect --count 2 link Item · still failing
+  ✓ 3 expect Total: $10 · fixed by this save
+  ```
+
+  - A failed `expect` doesn't stop the rest: every check is tried. A failed
+    action (a `click` on a button that's gone) does, since the steps after it
+    would be acting on a page that isn't where the script thinks; they're
+    said not to have run. `medley replay checks.medley --keep-going` runs a
+    script the same way once.
+  - What passes, and passed before, isn't listed: only what failed, what this
+    save broke, and what it fixed.
+  - A check waits 2 seconds for the page to get there, not the usual 5,
+    unless it says `--within`. A newer save ends a run that's still going.
+  - Checks run apart from the watching: what they do to the page (a click, a
+    visit to the cart) isn't taken for the save's doing, and before each
+    reload the page is brought back to the one being watched.
+  - The script is read again before each run, so it can be edited as you go;
+    `--check` can be given more than once.
+  - For an agent, `browser_reload` takes `checks` (the script's text): one
+    call after each edit gives the diff and how the checks stand, and is an
+    error when any fail. `browser_replay` with `keep_going` runs a script as
+    checks once.
 - **`reload --diff`** (MCP `browser_reload` with `diff`) says how the page's
   text changed since before the reload, not all of it: the loop for an agent
   editing a page. Refs that a reload renumbered don't count as changes.
@@ -735,6 +795,12 @@ errors, pictures of the right size, and a script that fails the same way
 again; a password typed isn't in any of it; a page behind a dialog or stuck in
 a script still gives its console, its requests and its last-read text; only
 medley's own oldest bundles are removed; `bundle` by itself, and both over MCP.
+`bun run test:watch` checks `watch --check` on a small site it edits: the
+checks at the start, a save that breaks one, another break with the first
+still failing, a save that fixes them, a failed action stopping the steps
+after it, the diff staying the save's own though the checks click and leave
+the page, scripts that can't run said at once; then `replay --keep-going`,
+and `browser_reload` with `checks` over MCP.
 `bun run test:dev` checks what developers lean on: `audit` against
 `test/a11y.html` (one of each problem, beside the same things done right),
 `expect`, recording the demo shop's form and replaying it in a fresh session,

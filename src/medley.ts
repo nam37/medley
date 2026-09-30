@@ -92,9 +92,12 @@ other commands:
                                   fails (with exit status 1); \${NAME} in it comes from the environment.
                                   A failure is saved as a bundle: the step, the steps before it, and
                                   what the page was (--bundle <dir>: where; --no-bundle: not at all)
+  replay <script> --keep-going    a failed expect doesn't stop the rest: every check is tried
   playwright <script>             print the script as a Playwright test
   watch [dir] [--hot]             reload the page when files in dir (default .) change, and say how
                                   its text changed (--hot: the dev server updates the page itself)
+  watch [dir] --check <script>    and after every save, run the script as checks: what failed, what
+                                  the save broke, what it fixed (a failed expect doesn't stop the rest)
   tui [url]                       browse the session in a full-screen terminal UI
   snapshot <url> [--json]         one-off: open the page in a fresh browser, print it, exit
                                   (--json: print the raw page model instead)
@@ -154,6 +157,8 @@ const opts = {
   note: undefined as string | undefined,
   bundle: undefined as string | undefined,
   noBundle: false,
+  check: [] as string[],
+  keepGoing: false,
   css: undefined as string | undefined,
   verbose: false,
   hot: false,
@@ -193,6 +198,8 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--note') opts.note = value();
   else if (a === '--bundle') opts.bundle = resolve(value());
   else if (a === '--no-bundle') opts.noBundle = true;
+  else if (a === '--check') opts.check.push(resolve(value()));
+  else if (a === '--keep-going') opts.keepGoing = true;
   else if (a === '--css') opts.css = value();
   else if (CHECK_FLAGS.has(a)) opts.checks.push([a.slice(2), value()]);
   else if (a === '--verbose') opts.verbose = true;
@@ -234,23 +241,26 @@ async function oneShot(url: string) {
   }
 }
 
+/** A step's line, as replay and watch print them: a green ✓, a red ✗ line, and what's under them dimmed. */
+const paint = (line: string) =>
+  !opts.color ? line : line.startsWith('✓') ? `\x1b[32m✓\x1b[39m${line.slice(1)}` : line.startsWith('✗') ? `\x1b[31m${line}\x1b[39m` : `\x1b[2m${line}\x1b[22m`;
+
 /** medley replay: a script's steps, each printed as it's done; false if one failed. */
 async function replayScript(file: string): Promise<boolean> {
   const path = resolve(file);
   const text = readFileSync(path, 'utf8');
   const steps = parseScript(text);
   if (!steps.length) fail(`${file} has no steps`);
-  const paint = (line: string) =>
-    !opts.color ? line : line.startsWith('✓') ? `\x1b[32m✓\x1b[39m${line.slice(1)}` : line.startsWith('✗') ? `\x1b[31m${line}\x1b[39m` : `\x1b[2m${line}\x1b[22m`;
   const results = await replay(opts.session, steps, {
     client: 'replay',
     start,
     vars: process.env,
+    keepGoing: opts.keepGoing,
     onStep: (r, i) => process.stdout.write(stepLines(r, i + 1, { verbose: opts.verbose }).map(paint).join('\n') + '\n'),
   });
   process.stdout.write(`${replaySummary(results, steps.length, file)}\n`);
-  // A failure is kept, to look into after the page has moved on.
-  const saved = opts.noBundle ? '' : await bundleFailure(opts.session, 'replay', steps, results, { name: basename(file), text }, opts.bundle);
+  // A failure is kept, to look into after the page has moved on (kept going, the page has moved on already).
+  const saved = opts.noBundle || opts.keepGoing ? '' : await bundleFailure(opts.session, 'replay', steps, results, { name: basename(file), text }, opts.bundle);
   if (saved) process.stdout.write(`${saved}\n`);
   return results.every((r) => r.ok);
 }
@@ -287,7 +297,14 @@ if (!command) {
     dir,
     hot: opts.hot,
     client: 'watch',
-    print: (text) => process.stdout.write((opts.color ? colorize(text) : text) + '\n'),
+    checks: opts.check,
+    // A page's changes are colored as any page text is; a run of checks, as replay's steps are.
+    print: (text) => {
+      const checks = text.startsWith('checks: ');
+      const lines = text.split('\n');
+      const shown = !opts.color ? text : checks ? [`\x1b[1m${lines[0]}\x1b[22m`, ...lines.slice(1).map(paint)].join('\n') : colorize(text);
+      process.stdout.write(shown + '\n');
+    },
   }).catch((e) => fail((e as Error).message));
   process.exit(0);
 } else if (command === 'tui') {

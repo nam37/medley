@@ -8,7 +8,7 @@ import { createInterface } from 'node:readline';
 import { STATES } from './checks.ts';
 import { CommandError, request, type StartOptions } from './client.ts';
 import { searchUrl, toUrl } from './commands.ts';
-import { bundleFailure, parseScript, replay, replaySummary, stepLines } from './script.ts';
+import { bundleFailure, CHECK_WAIT_S, checksReport, parseScript, replay, replaySummary, stepLines } from './script.ts';
 
 const REF = {
   type: ['integer', 'string'],
@@ -46,7 +46,8 @@ browser_extract gives tables and lists of results as data.
 Anywhere a ref goes, the element's name works too ("Add to cart"). After an
 action, notes say if the page logged errors or its requests failed;
 browser_console and browser_network show them. For a page you're building,
-browser_reload with diff=true after an edit says how its text changed, and
+browser_reload with diff=true after an edit says how its text changed (and
+with checks, a few lines of expects, whether it still works: one call per edit), and
 browser_audit checks its accessibility. browser_inspect looks closely at one
 element: why it can't be seen or clicked, which CSS rules style it and which
 scripts hear it, with their files and lines. browser_expect says whether a change
@@ -189,8 +190,8 @@ const TOOLS: Tool[] = [
     name: 'browser_reload',
     cmd: 'reload',
     description:
-      "Reload the page, as a browser's refresh button does, and return it. With hard=true, bypass the cache. With diff=true, return only how its text changed from before the reload (after editing a page you're building; refs renumbered by the reload don't count as changes). To see what a page changed on its own without reloading it, use browser_wait.",
-    inputSchema: { type: 'object', properties: { hard: { type: 'boolean' }, diff: { type: 'boolean' } } },
+      "Reload the page, as a browser's refresh button does, and return it. With hard=true, bypass the cache. With diff=true, return only how its text changed from before the reload (after editing a page you're building; refs renumbered by the reload don't count as changes). With `checks` (a script's text: a step or a browser_expect per line, as browser_record writes them, such as \"expect --no-errors\" or \"expect --count 3 button Remove\"), run them after the reload and say which failed and why, which this reload broke and which it fixed since you last ran the same checks; a failed expect doesn't stop the rest (each waits 2 seconds to be so, unless it says --within), and any failure makes the result an error. One call after each edit: what changed, and whether it still works. To see what a page changed on its own without reloading it, use browser_wait.",
+    inputSchema: { type: 'object', properties: { hard: { type: 'boolean' }, diff: { type: 'boolean' }, checks: { type: 'string' } } },
   },
   {
     name: 'browser_downloads',
@@ -282,7 +283,7 @@ const TOOLS: Tool[] = [
     name: 'browser_replay',
     cmd: 'replay',
     description:
-      'Do a recorded script\'s steps again (from `file`, or the `script` text), stopping at the first that fails, and say how each went. Your user can do the same without you: medley replay <file>. `vars` gives values for ${NAME}s in it; otherwise they come from the environment. When a step fails, what the page was then is saved as a bundle (see browser_bundle), with the step and those before it, and the result says where (in `bundle_dir`, or a folder of medley\'s own; bundle=false saves nothing).',
+      'Do a recorded script\'s steps again (from `file`, or the `script` text), stopping at the first that fails, and say how each went. Your user can do the same without you: medley replay <file>. `vars` gives values for ${NAME}s in it; otherwise they come from the environment. When a step fails, what the page was then is saved as a bundle (see browser_bundle), with the step and those before it, and the result says where (in `bundle_dir`, or a folder of medley\'s own; bundle=false saves nothing). With keep_going=true a failed expect doesn\'t stop the rest, so every check is tried (and no bundle is saved).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -291,6 +292,7 @@ const TOOLS: Tool[] = [
         vars: { type: 'object', additionalProperties: { type: 'string' } },
         bundle: { type: 'boolean' },
         bundle_dir: { type: 'string' },
+        keep_going: { type: 'boolean' },
       },
     },
   },
@@ -431,18 +433,33 @@ export async function serveMcp(sessionName: string, start: StartOptions) {
   const write = (msg: object) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n');
 
   /** A script's steps done again, as the agent itself (so its next look carries on from there); not ok if one failed. */
-  async function replayFor(args: Record<string, unknown>): Promise<{ text: string; ok: boolean }> {
+  async function replayFor(args: Record<string, unknown>): Promise<{ text: string; ok: boolean; messages: string[] }> {
     const name = args.file ? String(args.file) : 'the script';
     const text = args.script !== undefined ? String(args.script) : args.file ? readFileSync(resolve(String(args.file)), 'utf8') : '';
     const steps = parseScript(text);
     if (!steps.length) throw new Error('give a script: its file, or its text');
     const vars = { ...process.env, ...((args.vars as Record<string, string>) ?? {}) };
-    const results = await replay(sessionName, steps, { client, start, vars });
+    const messages: string[] = [];
+    const results = await replay(sessionName, steps, { client, start, vars, keepGoing: !!args.keep_going, heard: (m) => messages.push(...m) });
     const lines = results.flatMap((r, i) => stepLines(r, i + 1));
     // A failure is kept as a bundle, for whoever looks into it after the page has moved on.
     const dir = args.bundle_dir ? resolve(String(args.bundle_dir)) : undefined;
-    const saved = args.bundle === false ? '' : await bundleFailure(sessionName, client, steps, results, { name: basename(name), text }, dir);
-    return { text: [...lines, replaySummary(results, steps.length, name), ...(saved ? [saved] : [])].join('\n'), ok: results.every((r) => r.ok) };
+    const saved = args.bundle === false || args.keep_going ? '' : await bundleFailure(sessionName, client, steps, results, { name: basename(name), text }, dir);
+    return { text: [...lines, replaySummary(results, steps.length, name), ...(saved ? [saved] : [])].join('\n'), ok: results.every((r) => r.ok), messages };
+  }
+
+  // How each set of checks went the last time it was run, to tell what a reload broke and what it fixed.
+  const lastChecks = new Map<string, Map<string, boolean>>();
+
+  /** A script run as checks after a reload (see checksReport): what to say, and whether any failed. */
+  async function checksFor(script: string): Promise<{ text: string; ok: boolean; messages: string[] }> {
+    const steps = parseScript(script);
+    if (!steps.length) throw new Error('checks needs a script: a step or an expect per line');
+    const messages: string[] = [];
+    const results = await replay(sessionName, steps, { client, start, vars: process.env, keepGoing: true, within: CHECK_WAIT_S, heard: (m) => messages.push(...m) });
+    const report = checksReport(results, steps, steps.length === 1 ? '1 step' : `${steps.length} steps`, { before: lastChecks.get(script), since: 'this reload' });
+    lastChecks.set(script, report.outcome);
+    return { text: report.lines.join('\n'), ok: !report.failed && results.length === steps.length, messages };
   }
 
   async function handle(method: string, params: any): Promise<unknown> {
@@ -474,8 +491,8 @@ export async function serveMcp(sessionName: string, start: StartOptions) {
           if (tool.cmd === 'inspect') args.shot = !!args.screenshot;
           if (tool.cmd === 'bundle' && args.dir) args.dir = resolve(String(args.dir));
           if (tool.cmd === 'replay') {
-            const { text, ok } = await replayFor(args);
-            return { content: [{ type: 'text', text }], ...(ok ? {} : { isError: true }) };
+            const { text, ok, messages } = await replayFor(args);
+            return { content: [...fromUser(messages), { type: 'text', text }], ...(ok ? {} : { isError: true }) };
           }
           if (PAGE_TOOLS.has(tool.cmd)) args.max = args.max_chars === undefined ? MAX_CHARS : Number(args.max_chars);
           const command = { cmd: tool.cmd, args, client };
@@ -491,6 +508,10 @@ export async function serveMcp(sessionName: string, start: StartOptions) {
                 { type: 'text', text: `${shot.url} · ${shot.width}×${shot.height}` },
               ],
             };
+          }
+          if (tool.cmd === 'reload' && args.checks) {
+            const checked = await checksFor(String(args.checks));
+            return { content: [...said, ...fromUser(checked.messages), { type: 'text', text: `${text}\n\n${checked.text}` }], ...(checked.ok ? {} : { isError: true }) };
           }
           if (tool.cmd === 'inspect' && args.shot) {
             const seen = JSON.parse(text) as { text: string; png?: string };

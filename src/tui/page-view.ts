@@ -22,7 +22,7 @@ import {
   type RenderableOptions,
 } from '@opentui/core';
 import type { LayoutGroup, Rect, Visual } from '../render.ts';
-import { findTokens, type Token } from '../tokens.ts';
+import { refTokens, type Token } from '../tokens.ts';
 import { THEME } from './theme.ts';
 
 const GUTTER = 2; // change marker + space
@@ -323,7 +323,7 @@ export class PageView extends Renderable {
       return inFence;
     });
     this.refsByLine = lines.map((line, i) =>
-      this.fenced[i] ? [] : findTokens(line).map((t) => ({ ...t, line: i, textEnd: linkTextEnd(line, t, labels) })),
+      this.fenced[i] ? [] : refTokens(line, labels).map((t) => ({ ...t, line: i, textEnd: linkTextEnd(line, t, labels) })),
     );
     const seen = new Set<number>();
     this.refs = this.refsByLine.flat().filter((r) => !seen.has(r.ref) && seen.add(r.ref));

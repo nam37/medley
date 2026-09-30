@@ -7,12 +7,12 @@ import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditText, type AuditResult } from './audit.ts';
 import { Browser, sleep, type Dialog, type DownloadEvent, type LaunchOptions, type Page, type RequestEntry } from './browser.ts';
-import { diffLines, whereIs } from './diff.ts';
+import { diffLines, fencedLines, whereIs } from './diff.ts';
 import { ABOUT, siteOf, type About, type PageInfo } from './info.ts';
 import { parseKey } from './keys.ts';
 import { matchRef } from './names.ts';
 import type { RecordingStatus } from './script.ts';
-import { findTokens } from './tokens.ts';
+import { refTokens } from './tokens.ts';
 import { mainText, pageData, renderParts, type El, type LayoutGroup, type PageData, type PageModel, type Visual } from './render.ts';
 
 const read = (file: string) => readFileSync(fileURLToPath(new URL(file, import.meta.url)), 'utf8');
@@ -164,10 +164,12 @@ interface Part {
   text: string; // the line as shown
 }
 
-/** The regions and headings of a page, in order. */
+/** The regions and headings of a page, in order (not the ones in its code: see fencedLines). */
 function partsOf(body: string[]): Part[] {
   const parts: Part[] = [];
+  const code = fencedLines(body);
   body.forEach((text, line) => {
+    if (code[line]) return;
     const heading = /^(#{1,6}) (.*)$/.exec(text);
     if (heading) parts.push({ line, level: heading[1].length, name: heading[2], text });
     else if (/^── .* ──$/.test(text)) parts.push({ line, level: 0, name: text.slice(3, -3), text });
@@ -182,16 +184,21 @@ function partEnd(parts: Part[], i: number, total: number): number {
   return next ? next.line : total;
 }
 
-const refCount = (lines: string[]) => lines.reduce((n, l) => n + findTokens(l).length, 0);
-
 /** The page as its regions and headings, each with how much it holds. */
 function outlineText(s: Snap): string {
   const parts = partsOf(s.body);
-  const refs = refCount(s.body);
+  // Refs in the page's code (an example of a snapshot), or text that looks like one, aren't refs.
+  const code = fencedLines(s.body);
+  const refCount = (from: number, to: number) => {
+    let n = 0;
+    for (let i = from; i < to; i++) if (!code[i]) n += refTokens(s.body[i], s.labels).length;
+    return n;
+  };
+  const refs = refCount(0, s.body.length);
   const lines = parts.map((p, i) => {
     const end = partEnd(parts, i, s.body.length);
     const inner = s.body.slice(p.line + 1, end);
-    const own = refCount(inner);
+    const own = refCount(p.line + 1, end);
     const size = `${inner.filter((l) => l.trim()).length} lines${own ? `, ${own} refs` : ''}`;
     return `${p.level > 1 ? '  '.repeat(p.level - 1) : ''}${p.text}  (${size})`;
   });
@@ -1416,17 +1423,31 @@ export class Session {
     return null;
   }
 
-  /** Where a ref's element lives: a frame (null for the page itself) and its number there. */
-  private target(ref: number): { frame: string | null; local: number } {
+  /**
+   * Where a ref's element lives: a frame (null for the page itself), the
+   * document it was numbered in there, and its number there.
+   */
+  private target(ref: number): { frame: string | null; doc: string; local: number } {
     const at = this.refs?.map.resolve(ref);
-    if (!at || at.key === TOP) return { frame: null, local: at?.local ?? ref };
-    return { frame: at.key.slice(0, at.key.lastIndexOf(KEY_SEP)), local: at.local };
+    if (!at || at.key === TOP) return { frame: null, doc: '', local: at?.local ?? ref };
+    const cut = at.key.lastIndexOf(KEY_SEP);
+    return { frame: at.key.slice(0, cut), doc: at.key.slice(cut + 1), local: at.local };
   }
 
-  /** Call a page action on a ref, in the frame its element is in. */
+  /**
+   * Call a page action on a ref, in the frame its element is in. A frame
+   * numbers its own elements, afresh for each page it loads; a ref from
+   * before the frame loaded another page is refused rather than taken to
+   * mean whatever has that number now. (The page's own refs are checked the
+   * same way, before any action: see checkRefs.)
+   */
   private callRef<T>(method: string, ref: number, ...args: unknown[]): Promise<T> {
-    const { frame, local } = this.target(ref);
-    const expression = `(${ACTIONS}).${method}(${[local, ...args].map((a) => JSON.stringify(a)).join(', ')})`;
+    const { frame, doc, local } = this.target(ref);
+    const call = `(${ACTIONS}).${method}(${[local, ...args].map((a) => JSON.stringify(a)).join(', ')})`;
+    const stale = `the frame ref ${ref} was in has loaded another page since; take a new snapshot`;
+    const expression = frame
+      ? `((window.__medley && window.__medley.doc) === ${JSON.stringify(doc)} ? ${call} : { error: ${JSON.stringify(stale)} })`
+      : call;
     return this.page.evaluateIn<T>(frame, expression);
   }
 
@@ -1468,14 +1489,19 @@ export class Session {
     }
     let { x, y } = at;
     if (frame) {
+      // Out through each frame to the page, checking that nothing in the
+      // documents around the element (a banner over the frame) takes the click.
       for (const f of this.page.frameChain(frame).reverse()) {
-        const box = await this.page.evaluateIn<{ x: number; y: number; error?: string }>(
-          this.page.parentOf(f),
-          `(${ACTIONS}).frameBox(${JSON.stringify(f)}, false)`,
-        );
-        if (box.error) throw new Error(box.error);
-        x += box.x;
-        y += box.y;
+        const parent = this.page.parentOf(f);
+        const out = await this.page.evaluateIn<Located & { covered?: boolean }>(parent, `(${ACTIONS}).frameHit(${JSON.stringify(f)}, ${x}, ${y})`);
+        if (out.error && !out.dialog) throw new Error(out.covered ? `ref ${ref} is ${out.error}` : out.error);
+        if (out.error) {
+          // A modal's buttons are numbered by the document it's in; the page's own are known here.
+          const refs = parent === null ? (out.dialog ?? []).map((local) => this.refs?.map.lookup(TOP, local) ?? local) : [];
+          throw new Covered(`ref ${ref} is ${out.error}`, refs);
+        }
+        x = out.x;
+        y = out.y;
       }
     }
     return { x, y };

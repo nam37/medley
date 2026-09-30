@@ -351,7 +351,11 @@ expect Thanks
   and so on, for a test suite. What doesn't translate one to one (tabs) comes
   out as a comment.
 - A script is plain text: edit it, add checks, keep it with your code. Lines
-  starting with `#` are comments. A step whose element has no name of its own
+  starting with `#` are comments. Words are quoted as in a shell: `"…"`, `'…'`
+  (taken literally: a `${…}` in it isn't read from the environment), and
+  `$'…'` with `\n`-style escapes, which recording uses for text with line
+  breaks, so whatever was typed reads back exactly, as one step. A quoted word
+  is never an option: `type "textbox Note" "--submit"` types `--submit`. A step whose element has no name of its own
   (two "Add to cart" buttons) keeps its number, with a comment saying so.
   Recordings go to `~/.medley/recordings/` unless you name a file, and are
   saved after every step.
@@ -442,8 +446,11 @@ After an action you get one of:
 - **Terminal UI** (`src/tui/`) is one more client. It asks for the page's
   lines with each command, wraps and draws only the visible rows in a custom
   OpenTUI renderable (`page-view.ts`), and finds refs in the text itself
-  (`src/tokens.ts`). With the lines it also gets layout data from the
-  renderer: which runs of blocks sat side by side (for partial grid), and for
+  (`src/tokens.ts`), checking each against the page's own list of refs, so
+  text that only looks like one (a link reading "[1] Intro", a snapshot
+  quoted in a README) isn't taken for one. With the lines it also gets
+  layout data from the renderer: which runs of blocks sat side by side (for
+  partial grid), and for
   each line the page box it came from, with that box's position, colors and
   borders, plus where the pictures were (for advanced grid). The text itself
   never changes, so agents and diffs never see any of it.
@@ -459,9 +466,11 @@ After an action you get one of:
 - **Refs are stable.** An element keeps its number for as long as the document
   lives, so diffs show only real changes. Each client (the CLI, each MCP
   connection) has its own baseline. Refs from before a navigation are refused
-  instead of hitting whatever now has that number.
+  instead of hitting whatever now has that number, and so are refs into a
+  frame that has since loaded another page.
 - **Clicks are real mouse events** at a point that hit-testing confirms lands on
-  the element (or its label). If something covers it, the error names what.
+  the element (or its label), and, in a frame, gets through each page around
+  it to that frame. If something covers it, the error names what.
   `type` focuses the field, selects its text and inserts the new text, so
   frameworks see ordinary input events.
 - **Settling:** after each action it waits for any navigation, then for the
@@ -498,6 +507,12 @@ popup that closes itself, a multi-file field, a button whose page moves on by
 itself a moment later, a download link, a password field, and a script that
 tries to forge the ref table). `test/profile.html` counts its visits in the
 browser profile, for checking that `--profile` keeps it.
+`bun run test` runs every suite below, one after another (each is also its own
+`bun run test:…`; they're scripts that drive a real browser, not `bun test` files).
+`bun run test:script` checks, without a browser, that a recorded step reads back
+as what was done, whatever was typed: line breaks, both kinds of quote, text
+that looks like an option (`"--submit"`), a literal `${…}`, secrets, and the
+Playwright test made from them.
 `bun test/preview.ts <url> out.html [--mode advanced] [--width 150] [--rows 120]`
 draws a page the way the terminal UI would, into an HTML file of colored
 terminal cells, for looking at the grid modes without a terminal.
@@ -510,7 +525,9 @@ viewer, page info, the source view, recording a script (the `● rec`
 badge, the script's box), `:audit`, the help overlay, and a search from the
 address prompt. It prints each frame as it goes.
 `bun run test:idle` starts a session that stops after 3 idle seconds and
-checks that a command keeps it going and that it then stops by itself.
+checks that a command keeps it going and that it then stops by itself; then
+that four commands run at once from four processes start one session between
+them.
 `bun run test:dev` checks what developers lean on: `audit` against
 `test/a11y.html` (one of each problem, beside the same things done right),
 `expect`, recording the demo shop's form and replaying it in a fresh session,
@@ -519,11 +536,18 @@ a failing check, a password kept out of a script, the Playwright test,
 `bun run test:agent` checks what agents lean on, against `test/problems.html`
 (a page that logs errors and asks for a file that isn't there) and
 `test/data.html` (a table, results and menus): the notes after actions,
-`console`, `network`, names for refs, `find`, `extract`, and `--max`.
+`console`, `network`, names for refs, `find`, `extract`, `--max`, and an
+outline that leaves out a page's code (a snapshot shown as an example) and
+link text that only looks like a ref.
 `bun run test:frames` serves a page on 127.0.0.1 that embeds a form from
 localhost (another site, so its own process), which embeds a widget from
 127.0.0.1 again, and checks reading, typing, a checkbox, a select and clicks
-in each, a frame below the fold, and that refs stay put.
+in each, a frame below the fold, and that refs stay put. Then that a ref from
+before its frame loaded another page is refused (after another client has
+looked, when the old number means something else), that a notice over the
+page stops clicks into frames under it (from another site and from this one),
+that a frame from this site is read in like one from another, and that a
+table's hidden rows and cells don't show.
 `bun scripts/site-shots.ts <dir> [--as <url>]` drives the terminal UI through
 the demo shop in `docs/demo/` and saves its frames as HTML; the website's
 terminal pictures come from it.
@@ -540,7 +564,8 @@ test that times the frames, f draw techniques the terminal didn't report.
 
 - A frame from another site inside a same-origin frame stays a placeholder
   (frames directly in the page, or inside other cross-site frames, are read).
-  Advanced grid doesn't draw pictures inside frames from other sites.
+  Advanced grid doesn't draw pictures inside frames, and `audit` checks the
+  page itself, not what's inside its frames.
 - Canvas and WebGL apps don't render as text; `screenshot` (MCP
   `browser_screenshot`, which returns the image) shows them.
 - Some sites block headless Chrome; `--headed` may help.

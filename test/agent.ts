@@ -64,6 +64,12 @@ try {
   // A size limit turns a long result into the page's outline.
   out = medley('goto', page('app.html'), '--max', '500');
   check('over --max, the outline instead', out.includes('over your limit') && out.includes('outline:') && out.length < 2000, out);
+
+  // A page's code (an example of a snapshot, as on medley's own site) has no headings, regions or refs,
+  // and nor does link text that looks like a ref ("[1]What agents see", on the same site).
+  const code = '<h1>Docs</h1><pre>── nav ──\n# Not a heading\n[1]Not a ref  [2 button "Nor this"]</pre><h2>Next</h2><a href="#x">A real link</a> <a href="#y">[1]Looks like a ref</a>';
+  out = medley('goto', `data:text/html,${encodeURIComponent(code)}`, '--outline');
+  check("the outline leaves out a page's code, and text that looks like a ref", /outline: \d+ lines, 2 refs/.test(out) && !out.includes('Not a heading') && !out.includes('── nav ──') && out.includes('## Next  (1 lines, 2 refs)'), out);
 } finally {
   medley('stop');
 }

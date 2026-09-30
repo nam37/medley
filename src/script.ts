@@ -17,7 +17,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
 import { sleep } from './browser.ts';
 import { request, type Command, type StartOptions } from './client.ts';
-import { parseCommand, splitFlags, splitWords } from './commands.ts';
+import { parseCommand, splitFlags, tokenize, type Word } from './commands.ts';
 import { nameFor, parseLabel } from './names.ts';
 
 // ---- recording ------------------------------------------------------------------
@@ -29,21 +29,34 @@ export interface Step {
   note?: string;
 }
 
+const CONTROL = /[\x00-\x1f\x7f]/;
+const SHORT_ESCAPES: Record<string, string> = { '\n': '\\n', '\r': '\\r', '\t': '\\t' };
+
 /**
- * A word as a script line needs it: as it is, or in quotes when it has
- * spaces or quotes or looks like an option. Null when it has both kinds of quote.
+ * A word as a script line needs it, to read back exactly (see tokenize): as
+ * it is; in "double quotes" when it has spaces or single quotes or looks like
+ * an option; in 'single quotes' when it has ${…} that isn't a secret to fill
+ * in (`literal`), or double quotes; and as $'…' with escapes when it has
+ * line breaks or other control characters, or both kinds of quote.
  */
-function quote(word: string): string | null {
-  if (word && !/[\s"']/.test(word) && !word.startsWith('--')) return word;
-  if (!word.includes('"')) return `"${word}"`;
-  if (!word.includes("'")) return `'${word}'`;
-  return null;
+function quote(word: string, literal = true): string {
+  const dollar = literal && word.includes('${');
+  if (CONTROL.test(word) || (word.includes('"') && word.includes("'")) || (dollar && word.includes("'"))) {
+    const escaped = word.replace(/[\\']/g, '\\$&').replace(/[\x00-\x1f\x7f]/g, (c) => SHORT_ESCAPES[c] ?? `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
+    return `$'${escaped}'`;
+  }
+  if (word && !/[\s"']/.test(word) && !word.startsWith('--') && !dollar) return word;
+  return word.includes('"') || dollar ? `'${word}'` : `"${word}"`;
 }
 
-/** Words that a command takes as its last argument, joined (click Add to cart): as they are, if they read back the same. */
-function tail(text: string): string | null {
-  const back = splitFlags(splitWords(text)).words.join(' ');
-  return back === text && text !== '' ? text : quote(text);
+/**
+ * Words that a command takes as its last argument, joined (click Add to
+ * cart): as they are, if they read back the same; otherwise as one quoted word.
+ */
+function tail(text: string, literal = true): string {
+  const words = tokenize(text);
+  const plain = words.every((w) => !w.quoted && !w.text.startsWith('--') && !(literal && w.text.includes('${')));
+  return plain && text !== '' && words.map((w) => w.text).join(' ') === text ? text : quote(text, literal);
 }
 
 // Fields whose values a script shouldn't keep: they're read from the environment when replayed.
@@ -55,22 +68,18 @@ function secretName(kind: string, name: string): string | null {
   return name.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 30) || 'SECRET';
 }
 
-class Unwritable extends Error {}
-
 /**
  * A command as a script line, its refs written as names (from `labels`, the
  * page as the one who acted saw it); null for commands that only look
  * (snapshot, find, audit…). A ref whose name doesn't single it out is kept
- * as its number, with a note.
+ * as its number, with a note. Whatever was typed reads back exactly, line
+ * breaks, quotes and all; what went into a secret field is left out.
  */
 export function stepFor({ cmd, args = {} }: Command, labels: Map<number, string>): Step | null {
   const vars: string[] = [];
   const notes: string[] = [];
-  const q = (w: string) => quote(w) ?? thrown(w);
-  const t = (w: string) => tail(w) ?? thrown(w);
-  const thrown = (w: string): never => {
-    throw new Unwritable(`${cmd} with ${w.length > 40 ? w.slice(0, 39) + '…' : w}, which has both kinds of quote`);
-  };
+  const q = (w: string) => quote(w);
+  const t = (w: string) => tail(w);
   const el = (ref: unknown): string => {
     const n = Number(ref);
     const name = nameFor(labels, n);
@@ -78,97 +87,99 @@ export function stepFor({ cmd, args = {} }: Command, labels: Map<number, string>
     notes.push(`${labels.get(n) ?? `[${n}]`} has no name of its own on the page, so it's by number, which may differ when replayed`);
     return String(n);
   };
-  const value = (ref: unknown, text: string): string => {
+  // What was typed into a field, or ${NAME} for a secret one, read from the environment when replayed.
+  const secretOf = (ref: unknown, text: string): string | null => {
     const { kind, name } = parseLabel(labels.get(Number(ref)) ?? '');
     const secret = text ? secretName(kind, name) : null;
-    if (!secret) return text;
-    vars.push(secret);
-    return `\${${secret}}`;
+    if (secret) vars.push(secret);
+    return secret;
+  };
+  const value = (ref: unknown, text: string): string => {
+    const secret = secretOf(ref, text);
+    return secret ? `\${${secret}}` : tail(text);
   };
   let words: string[];
-  try {
-    switch (cmd) {
-      case 'goto': {
-        const search = args.search ?? args.query;
-        words = search ? ['search', t(String(search))] : ['goto', q(String(args.url))];
-        break;
-      }
-      case 'click':
-        words = ['click', t(el(args.ref)), ...(args.newTab ? ['--new-tab'] : [])];
-        break;
-      case 'hover':
-        words = ['hover', t(el(args.ref))];
-        break;
-      case 'type':
-        words = ['type', q(el(args.ref)), ...(args.text ? [t(value(args.ref, String(args.text)))] : ['""']), ...(args.submit ? ['--submit'] : [])];
-        break;
-      case 'select':
-        words = ['select', q(el(args.ref)), t(String(args.option ?? ''))];
-        break;
-      case 'fill': {
-        const fields = Array.isArray(args.fields) ? (args.fields as { ref: unknown; value: unknown }[]) : [];
-        words = ['fill', ...fields.map((f) => {
-          const target = el(f.ref);
-          return q(`${target.includes('=') ? Number(f.ref) : target}=${value(f.ref, String(f.value ?? ''))}`);
-        }), ...(args.submit ? ['--submit'] : [])];
-        break;
-      }
-      case 'upload':
-        words = ['upload', q(el(args.ref)), ...(Array.isArray(args.files) ? args.files.map((f) => q(String(f))) : [])];
-        break;
-      case 'drag': {
-        // A ref it was dropped on is found again by its text, as a drop zone is.
-        const to = /^\d+$/.test(String(args.to)) ? parseLabel(labels.get(Number(args.to)) ?? '').name || String(args.to) : String(args.to);
-        words = ['drag', q(el(args.from)), q(to)];
-        break;
-      }
-      case 'scroll': {
-        const to = String(args.to ?? 'down');
-        words = ['scroll', /^\d+$/.test(to) ? t(el(to)) : to];
-        break;
-      }
-      case 'press':
-        words = ['press', q(String(args.key))];
-        break;
-      case 'reload':
-        words = ['reload', ...(args.hard ? ['--hard'] : [])];
-        break;
-      case 'back':
-      case 'forward':
-        words = [cmd];
-        break;
-      case 'history':
-        if (args.n === undefined) return null; // only listed it
-        words = ['history', String(args.n)];
-        break;
-      case 'newtab':
-        words = ['newtab', ...(args.url ? [q(String(args.url))] : [])];
-        break;
-      case 'tab':
-        words = ['tab', String(args.n)];
-        break;
-      case 'close-tab':
-        words = ['close-tab', ...(args.n !== undefined ? [String(args.n)] : [])];
-        break;
-      case 'wait': {
-        const seconds = args.seconds !== undefined && args.seconds !== '' ? [String(args.seconds)] : [];
-        if (args.for !== undefined) words = ['wait', '--for', q(String(args.for)), ...seconds];
-        else if (args.gone !== undefined) words = ['wait', '--gone', q(String(args.gone)), ...seconds];
-        else words = ['wait', ...(seconds.length ? seconds : ['2'])];
-        break;
-      }
-      case 'expect':
-        words = args.gone ? ['expect', '--gone', q(String(args.text))] : ['expect', t(String(args.text))];
-        break;
-      case 'dialog':
-        words = ['dialog', String(args.action), ...(args.text !== undefined ? [q(String(args.text))] : [])];
-        break;
-      default:
-        return null;
+  switch (cmd) {
+    case 'goto': {
+      const search = args.search ?? args.query;
+      words = search ? ['search', t(String(search))] : ['goto', q(String(args.url))];
+      break;
     }
-  } catch (e) {
-    if (!(e instanceof Unwritable)) throw e;
-    return { line: `# not written down: ${e.message}`, vars: [] };
+    case 'click':
+      words = ['click', t(el(args.ref)), ...(args.newTab ? ['--new-tab'] : [])];
+      break;
+    case 'hover':
+      words = ['hover', t(el(args.ref))];
+      break;
+    case 'type':
+      words = ['type', q(el(args.ref)), args.text ? value(args.ref, String(args.text)) : '""', ...(args.submit ? ['--submit'] : [])];
+      break;
+    case 'select':
+      words = ['select', q(el(args.ref)), t(String(args.option ?? ''))];
+      break;
+    case 'fill': {
+      const fields = Array.isArray(args.fields) ? (args.fields as { ref: unknown; value: unknown }[]) : [];
+      words = ['fill', ...fields.map((f) => {
+        const target = el(f.ref);
+        const name = target.includes('=') ? String(Number(f.ref)) : target; // a name with = in it would split wrongly
+        const text = String(f.value ?? '');
+        const secret = secretOf(f.ref, text);
+        return secret ? quote(`${name}=\${${secret}}`, false) : quote(`${name}=${text}`);
+      }), ...(args.submit ? ['--submit'] : [])];
+      break;
+    }
+    case 'upload':
+      words = ['upload', q(el(args.ref)), ...(Array.isArray(args.files) ? args.files.map((f) => q(String(f))) : [])];
+      break;
+    case 'drag': {
+      // A ref it was dropped on is found again by its text, as a drop zone is.
+      const to = /^\d+$/.test(String(args.to)) ? parseLabel(labels.get(Number(args.to)) ?? '').name || String(args.to) : String(args.to);
+      words = ['drag', q(el(args.from)), q(to)];
+      break;
+    }
+    case 'scroll': {
+      const to = String(args.to ?? 'down');
+      words = ['scroll', /^\d+$/.test(to) ? t(el(to)) : to];
+      break;
+    }
+    case 'press':
+      words = ['press', q(String(args.key))];
+      break;
+    case 'reload':
+      words = ['reload', ...(args.hard ? ['--hard'] : [])];
+      break;
+    case 'back':
+    case 'forward':
+      words = [cmd];
+      break;
+    case 'history':
+      if (args.n === undefined) return null; // only listed it
+      words = ['history', String(args.n)];
+      break;
+    case 'newtab':
+      words = ['newtab', ...(args.url ? [q(String(args.url))] : [])];
+      break;
+    case 'tab':
+      words = ['tab', String(args.n)];
+      break;
+    case 'close-tab':
+      words = ['close-tab', ...(args.n !== undefined ? [String(args.n)] : [])];
+      break;
+    case 'wait': {
+      const seconds = args.seconds !== undefined && args.seconds !== '' ? [String(args.seconds)] : [];
+      if (args.for !== undefined) words = ['wait', '--for', q(String(args.for)), ...seconds];
+      else if (args.gone !== undefined) words = ['wait', '--gone', q(String(args.gone)), ...seconds];
+      else words = ['wait', ...(seconds.length ? seconds : ['2'])];
+      break;
+    }
+    case 'expect':
+      words = args.gone ? ['expect', '--gone', q(String(args.text))] : ['expect', t(String(args.text))];
+      break;
+    case 'dialog':
+      words = ['dialog', String(args.action), ...(args.text !== undefined ? [q(String(args.text))] : [])];
+      break;
+    default:
+      return null;
   }
   return { line: words.join(' '), vars, ...(notes.length ? { note: notes.join('; ') } : {}) };
 }
@@ -244,10 +255,13 @@ export function parseScript(text: string): ScriptStep[] {
 }
 
 const VAR = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+// A literal "${" (in 'single quotes') while a step is turned into code, kept apart from a ${NAME} (see js).
+const LITERAL_DOLLAR = '$\u0001{';
 
-/** The environment variables a script reads, as ${NAME}. */
+/** The environment variables a script reads, as ${NAME} (not in 'single quotes', which are taken literally). */
 export function scriptVars(steps: ScriptStep[]): string[] {
-  return [...new Set(steps.flatMap((s) => [...s.text.matchAll(VAR)].map((m) => m[1])))];
+  const names = steps.flatMap((s) => tokenize(s.text).filter((w) => w.quoted !== "'").flatMap((w) => [...w.text.matchAll(VAR)].map((m) => m[1])));
+  return [...new Set(names)];
 }
 
 // Not steps: they'd end or change the session the script runs in.
@@ -260,9 +274,17 @@ export interface StepResult {
   ms: number;
 }
 
-/** A step's command, with ${NAME}s filled in from `vars`. */
-function stepCommand(step: ScriptStep, vars: Record<string, string | undefined>) {
-  const words = splitWords(step.text).map((w) => w.replace(VAR, (_, name: string) => vars[name] ?? ''));
+/**
+ * A step's command, with its ${NAME}s filled in from `vars`, except in
+ * 'single quotes'. With `vars` null they're kept, for toPlaywright.
+ */
+export function stepCommand(step: ScriptStep, vars: Record<string, string | undefined> | null) {
+  const words = tokenize(step.text).map((w): Word => {
+    if (w.quoted === "'") return vars ? w : { ...w, text: w.text.replaceAll('${', LITERAL_DOLLAR) };
+    if (!vars || !w.text.includes('${')) return w;
+    // Filled in, it's text, never an option, whatever it says.
+    return { text: w.text.replace(VAR, (_, name: string) => vars[name] ?? ''), quoted: '"' };
+  });
   const { words: rest, flags } = splitFlags(words);
   if (NOT_STEPS.has(rest[0])) throw new Error(`${rest[0]} can't be a step of a script`);
   return parseCommand(rest, flags);
@@ -341,7 +363,9 @@ const ROLES: Record<string, string> = {
 /** A string as JavaScript, with ${NAME}s read from the environment. */
 function js(text: string): string {
   const parts = text.split(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/);
-  const code = parts.map((p, i) => (i % 2 ? `(process.env.${p} ?? '')` : JSON.stringify(p))).filter((p, i) => i % 2 || p !== '""');
+  const code = parts
+    .map((p, i) => (i % 2 ? `(process.env.${p} ?? '')` : JSON.stringify(p.replaceAll(LITERAL_DOLLAR, '${'))))
+    .filter((p, i) => i % 2 || p !== '""');
   return code.length ? code.join(' + ') : '""';
 }
 
@@ -369,15 +393,15 @@ export function toPlaywright(steps: ScriptStep[], file: string): string {
     let cmd: string;
     let args: Record<string, any>;
     try {
-      ({ cmd, args } = stepCommand(step, {}));
+      ({ cmd, args } = stepCommand(step, null));
     } catch (e) {
       return todo(step, (e as Error).message);
     }
     // Playwright dismisses a page's dialogs unless told beforehand what to do.
     const next = steps[i + 1];
     if (next && /^dialog accept\b/.test(next.text)) {
-      const text = splitWords(next.text).slice(2).join(' ');
-      body.push(`  page.once('dialog', (dialog) => dialog.accept(${text ? js(text) : ''}));`);
+      const text = stepCommand(next, null).args.text;
+      body.push(`  page.once('dialog', (dialog) => dialog.accept(${text !== undefined ? js(String(text)) : ''}));`);
     }
     const el = (ref: unknown) => locator(String(ref));
     const w = (code: string) => body.push(`  await ${code};`);

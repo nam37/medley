@@ -42,6 +42,28 @@ const PAGES: Record<string, (port: number) => string> = {
   '/grandchild': () => `<!doctype html><title>Likes</title>
 <button id="like">Like</button> <span id="likes">0 likes</span>
 <script>let n = 0; like.onclick = () => { likes.textContent = ++n + ' likes'; };</script>`,
+
+  // A frame that loads another page, whose elements get the same numbers there.
+  '/stale': (port) => `<!doctype html><title>Stale</title><h1>Stale refs</h1>
+<iframe title="Steps" src="http://localhost:${port}/stale-a" width="500" height="120"></iframe>`,
+  '/stale-a': (port) => `<!doctype html><a href="http://localhost:${port}/stale-b">Next</a> <button onclick="out.textContent = 'Original clicked'">Original action</button> <span id="out"></span>`,
+  '/stale-b': (port) => `<!doctype html><a href="http://localhost:${port}/stale-a">Back</a> <button onclick="out.textContent = 'Unrelated clicked'">Unrelated action</button> <span id="out"></span>`,
+
+  // A notice over the page, covering frames from another site and from this one.
+  '/cover': (port) => `<!doctype html><title>Covered</title><h1>Covered frames</h1>
+<iframe title="Other site" src="http://localhost:${port}/cover-child" width="400" height="80"></iframe>
+<iframe title="This site" src="/cover-child" width="400" height="80"></iframe>
+<div style="position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4); color: white">A notice over everything</div>`,
+  '/cover-child': () => `<!doctype html><button onclick="out.textContent = 'Covered button clicked'">Covered button</button> <span id="out"></span>`,
+
+  // A frame from this site, read in like any other; and a table with hidden rows and cells.
+  '/same': () => `<!doctype html><title>Same site</title><h1>Same-site frame</h1>
+<iframe title="Same" src="/same-child" width="400" height="100"></iframe>
+<table><tr><th>Item</th><th>Qty</th></tr><tr><td>Shown row</td><td>1</td></tr>
+<tbody hidden><tr><td>Hidden body row</td><td>2</td></tr></tbody>
+<tr style="visibility: collapse"><td>Collapsed row</td><td>3</td></tr>
+<tr><td>Another row</td><td style="visibility: hidden">Hidden cell</td></tr></table>`,
+  '/same-child': () => `<!doctype html><h2>Inside the frame</h2><button onclick="out.textContent = 'Inside clicked'">Inside button</button> <span id="out">Not clicked</span>`,
 };
 
 let failures = 0;
@@ -87,6 +109,37 @@ try {
   check('click a link at the bottom of the frame', r.startsWith('clicked'), r);
   r = await session.snapshot('t', { diff: true });
   check('refs stay put across snapshots', r.includes('no visible change') || !r.includes('new page'), r);
+
+  // A ref from before its frame loaded another page is refused, not taken to
+  // mean the element that has its number now, even after another client looks.
+  const stale = await session.goto('t', `http://127.0.0.1:${server.port}/stale`);
+  const original = refOf(stale, /\[(\d+) button "Original action"\]/);
+  const next = refOf(stale, /\[(\d+)\]Next/);
+  await session.snapshot('other');
+  r = await session.click('other', next);
+  check('another client moves the frame on', r.includes('Unrelated action'), r);
+  r = await session.click('t', original).catch((e: Error) => `error: ${e.message}`);
+  check("a stale frame ref is refused", r.startsWith('error:') && r.includes('loaded another page'), r);
+  r = await session.snapshot('t');
+  check('and nothing was clicked', !r.includes('Unrelated clicked') && !r.includes('Original clicked'), r);
+
+  // A notice over the page covers the frames under it: the click fails, saying so.
+  const covered = await session.goto('t', `http://127.0.0.1:${server.port}/cover`);
+  const [other, same] = [...covered.matchAll(/\[(\d+) button "Covered button"\]/g)].map((m) => Number(m[1]));
+  for (const [which, ref] of [['from another site', other], ['from this site', same]] as const) {
+    r = await session.click('t', ref).catch((e: Error) => `error: ${e.message}`);
+    check(`a frame ${which} under a notice: covered, not clicked`, r.startsWith('error:') && r.includes('covered by') && r.includes('A notice over everything'), r);
+  }
+  r = await session.snapshot('t');
+  check('and neither button was clicked', !r.includes('Covered button clicked'), r);
+
+  // A frame from this site reads in like one from another; hidden rows and cells don't show.
+  const same2 = await session.goto('t', `http://127.0.0.1:${server.port}/same`);
+  check('a frame from this site is read in, under a divider', same2.includes('── iframe "Same" ──') && same2.includes('## Inside the frame'), same2);
+  r = await session.click('t', refOf(same2, /\[(\d+) button "Inside button"\]/));
+  check('and its buttons work', r.includes('Inside clicked'), r);
+  check("a table's hidden rows and cells don't show", same2.includes('Shown row') && same2.includes('Another row') &&
+    !same2.includes('Hidden body row') && !same2.includes('Collapsed row') && !same2.includes('Hidden cell'), same2);
 } catch (e) {
   check('no errors', false, String((e as Error).stack ?? e));
 } finally {

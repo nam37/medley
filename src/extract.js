@@ -100,7 +100,17 @@
 
   function rectOf(el) {
     const b = el.getBoundingClientRect();
-    return [Math.round(b.left + scrollX), Math.round(b.top + scrollY), Math.round(b.width), Math.round(b.height)];
+    let x = b.left;
+    let y = b.top;
+    // In a same-origin frame, a box is in the frame's own window: place it where the frame is.
+    for (let win = el.ownerDocument.defaultView; win && win !== window && win.frameElement; win = win.parent) {
+      const f = win.frameElement;
+      const r = f.getBoundingClientRect();
+      const cs = styleOf(f);
+      x += r.left + f.clientLeft + parseFloat(cs.paddingLeft);
+      y += r.top + f.clientTop + parseFloat(cs.paddingTop);
+    }
+    return [Math.round(x + scrollX), Math.round(y + scrollY), Math.round(b.width), Math.round(b.height)];
   }
 
   // Text of an element without the contents of form controls inside it
@@ -375,15 +385,19 @@
     if (tag === 'svg' || tag === 'math') return null;
 
     if (tag === 'iframe' || tag === 'frame') {
+      const name = cut(clean(el.title || el.getAttribute('aria-label') || el.name || ''), 80) || hostOf(el.src);
       let doc = null;
       try { doc = el.contentDocument; } catch {}
       if (doc && doc.body) {
+        // A frame from this site: read in where it is, under a divider, as one from another site is (see session.ts).
         n.c = kids(doc.body, inner);
-        return n.c.length ? n : null;
+        if (!n.c.length) return null;
+        Object.assign(n, { tag: 'div', d: 'b', r, lm: 'iframe' }, name ? { lmn: name } : {});
+        return n;
       }
       if (!vis || r[2] < 50 || r[3] < 50) return null;
       n.tag = 'iframe';
-      n.n = cut(clean(el.title || el.getAttribute('aria-label') || el.name || ''), 80) || hostOf(el.src);
+      n.n = name;
       // Set by medley (in this world only) on the frame's element, so its
       // content can be read separately and put in here.
       if (typeof el.__medleyFrame === 'string') n.frame = el.__medleyFrame;
@@ -406,11 +420,13 @@
     if (tag === 'table' && isDataTable(el, role)) {
       n.rows = [];
       for (const row of el.rows) {
-        if (styleOf(row).display === 'none') continue;
+        // Hidden itself or with its section (a <tbody hidden>, a collapsed row), or left out for screen readers.
+        if (!row.checkVisibility({ visibilityProperty: true }) || row.closest('[aria-hidden="true"]') !== el.closest('[aria-hidden="true"]')) continue;
         const cells = [];
         for (const cell of row.cells) {
-          if (styleOf(cell).display === 'none') continue;
-          cells.push({ th: cell.localName === 'th' ? 1 : 0, c: kids(cell, inner) });
+          const cs = styleOf(cell);
+          if (cs.display === 'none' || cell.getAttribute('aria-hidden') === 'true') continue;
+          cells.push({ th: cell.localName === 'th' ? 1 : 0, c: kids(cell, { ...inner, vis: cs.visibility === 'visible' }) });
         }
         if (cells.length) n.rows.push(cells);
       }

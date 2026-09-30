@@ -21,7 +21,7 @@ import type { RecordingStatus } from '../script.ts';
 import type { TalkEvent } from '../talk.ts';
 import { resolve } from 'node:path';
 import { addBookmark, readBookmarks, removeBookmark } from '../bookmarks.ts';
-import { looksLikeAddress, parseCommand, searchUrl, splitFlags, splitWords, toUrl } from '../commands.ts';
+import { looksLikeAddress, parseCommand, searchUrl, splitFlags, splitWords, tokenize, toUrl } from '../commands.ts';
 import { changedLines } from '../diff.ts';
 import { infoText, type PageInfo } from '../info.ts';
 import { mainText } from '../render.ts';
@@ -719,7 +719,7 @@ export class App {
 
   private command(line: string) {
     try {
-      const { words, flags } = splitFlags(splitWords(line));
+      const { words, flags } = splitFlags(tokenize(line));
       const { cmd, args, start } = parseCommand(words, flags);
       void this.run(cmd, args, { start });
     } catch (e) {

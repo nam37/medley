@@ -55,23 +55,48 @@ export function looksLikeAddress(text: string): boolean {
   return SCHEME.test(text) || LOCAL.test(text) || /^[^/]+\.[^/.]+/.test(text);
 }
 
-/** Split a typed line into words, as a shell would for "quoted words" and 'quoted words'. */
-export function splitWords(line: string): string[] {
-  const words: string[] = [];
-  for (const m of line.matchAll(/"([^"]*)"?|'([^']*)'?|(\S+)/g)) words.push(m[1] ?? m[2] ?? m[3]);
+/** A typed word, and how it was quoted: "…" and '…' as a shell quotes, $'…' with \n-style escapes. */
+export interface Word {
+  text: string;
+  quoted: '' | '"' | "'"; // $'…' counts as '…': both are taken literally
+}
+
+const WORD = /\$'((?:[^'\\]|\\.)*)'?|"([^"]*)"?|'([^']*)'?|(\S+)/g;
+const ESCAPES: Record<string, string> = { n: '\n', r: '\r', t: '\t', '0': '\0' };
+
+/** Split a typed line into words, as a shell would. */
+export function tokenize(line: string): Word[] {
+  const words: Word[] = [];
+  for (const m of line.matchAll(WORD)) {
+    if (m[1] !== undefined) {
+      const text = m[1].replace(/\\(x[0-9a-fA-F]{2}|.)/g, (_, c: string) => (c.length === 3 ? String.fromCharCode(parseInt(c.slice(1), 16)) : (ESCAPES[c] ?? c)));
+      words.push({ text, quoted: "'" });
+    } else if (m[2] !== undefined) words.push({ text: m[2], quoted: '"' });
+    else if (m[3] !== undefined) words.push({ text: m[3], quoted: "'" });
+    else words.push({ text: m[4], quoted: '' });
+  }
   return words;
 }
 
-/** Pull options (--links, --submit, --for <text>, …) out of a word list, as the command line does. */
-export function splitFlags(words: string[]): { words: string[]; flags: CommandFlags } {
+/** Split a typed line into words, without saying how they were quoted. */
+export function splitWords(line: string): string[] {
+  return tokenize(line).map((w) => w.text);
+}
+
+/**
+ * Pull options (--links, --submit, --for <text>, …) out of a word list, as
+ * the command line does. A quoted word is never an option: "--submit" is text.
+ */
+export function splitFlags(words: (string | Word)[]): { words: string[]; flags: CommandFlags } {
   const flags: Record<string, unknown> = {};
   const rest: string[] = [];
   const key = (w: string) => w.slice(2).replace(/-(\w)/g, (_, c: string) => c.toUpperCase()); // --new-tab → newTab
-  for (let i = 0; i < words.length; i++) {
-    const w = words[i];
-    if (FLAGS.has(w)) flags[key(w)] = true;
-    else if (VALUE_FLAGS.has(w) && i + 1 < words.length) flags[key(w)] = words[++i];
-    else rest.push(w);
+  const list = words.map((w) => (typeof w === 'string' ? { text: w, quoted: '' } : w));
+  for (let i = 0; i < list.length; i++) {
+    const { text, quoted } = list[i];
+    if (!quoted && FLAGS.has(text)) flags[key(text)] = true;
+    else if (!quoted && VALUE_FLAGS.has(text) && i + 1 < list.length) flags[key(text)] = list[++i].text;
+    else rest.push(text);
   }
   return { words: rest, flags: flags as CommandFlags };
 }

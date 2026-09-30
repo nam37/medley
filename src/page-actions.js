@@ -31,12 +31,60 @@
         const x = r.left + r.width * fx;
         const y = r.top + r.height * fy;
         const hit = this.hitTest(doc, x, y);
-        if (lands(hit)) return this.toTop(doc, x, y);
-        blocker = blocker || hit;
+        if (!lands(hit)) {
+          blocker = blocker || hit;
+          continue;
+        }
+        // In a frame, the page around it can cover it too.
+        const at = this.reach(doc, x, y);
+        if (!('blocker' in at)) return at;
+        blocker = blocker || at.blocker;
       }
     }
-    const dialog = this.dialogAt(blocker);
-    return { error: `ref ${ref} is covered by ${this.describe(blocker)}`, dialog: dialog ? this.controls(dialog) : undefined };
+    return { ...this.covering(blocker), error: `ref ${ref} is covered by ${this.describe(blocker)}` };
+  },
+
+  // What covers a point: its description, and a modal's controls if it's one.
+  covering(hit) {
+    const dialog = this.dialogAt(hit);
+    return { error: `covered by ${this.describe(hit)}`, covered: true, dialog: dialog ? this.controls(dialog) : undefined };
+  },
+
+  // Where a frame's content starts, in the viewport of the document it's in.
+  origin(frame) {
+    const r = frame.getBoundingClientRect();
+    const cs = frame.ownerDocument.defaultView.getComputedStyle(frame);
+    return { x: r.left + frame.clientLeft + parseFloat(cs.paddingLeft), y: r.top + frame.clientTop + parseFloat(cs.paddingTop) };
+  },
+
+  // A point in a (same-origin) frame's document, in top-level coordinates, if
+  // a click there gets through every document around it to that frame;
+  // otherwise { blocker }, what's in the way.
+  reach(doc, x, y) {
+    for (let win = doc.defaultView; win && win !== window && win.frameElement; win = win.parent) {
+      const frame = win.frameElement;
+      const o = this.origin(frame);
+      x += o.x;
+      y += o.y;
+      const hit = this.hitTest(frame.ownerDocument, x, y);
+      if (hit !== frame) return { blocker: hit };
+    }
+    return { x, y };
+  },
+
+  // A point in a child frame's content (in its own viewport), here: in this
+  // document's top-level viewport, if nothing here covers the frame there;
+  // otherwise what does. For frames from other sites, whose content this
+  // document can't see (the session asks each document in turn).
+  frameHit(key, x, y) {
+    const held = window.__medleyFrames && window.__medleyFrames.get(key);
+    const el = held && held.deref();
+    if (!el || !el.isConnected) return { error: 'that frame is no longer on the page; take a new snapshot' };
+    const o = this.origin(el);
+    const hit = this.hitTest(el.ownerDocument, o.x + x, o.y + y);
+    if (hit !== el) return this.covering(hit);
+    const at = this.reach(el.ownerDocument, o.x + x, o.y + y);
+    return 'blocker' in at ? this.covering(at.blocker) : at;
   },
 
   // The modal a hit belongs to, if any. The hit is often its backdrop, which
@@ -82,10 +130,9 @@
   // Convert a point in a (same-origin) iframe to top-level coordinates.
   toTop(doc, x, y) {
     for (let win = doc.defaultView; win && win !== window && win.frameElement; win = win.parent) {
-      const frame = win.frameElement;
-      const r = frame.getBoundingClientRect();
-      x += r.left + frame.clientLeft;
-      y += r.top + frame.clientTop;
+      const o = this.origin(win.frameElement);
+      x += o.x;
+      y += o.y;
     }
     return { x, y };
   },
@@ -163,11 +210,8 @@
     const el = held && held.deref();
     if (!el || !el.isConnected) return { error: 'that frame is no longer on the page; take a new snapshot' };
     if (scroll) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-    const r = el.getBoundingClientRect();
-    const cs = el.ownerDocument.defaultView.getComputedStyle(el);
-    const x = r.left + el.clientLeft + parseFloat(cs.paddingLeft);
-    const y = r.top + el.clientTop + parseFloat(cs.paddingTop);
-    return this.toTop(el.ownerDocument, x, y);
+    const o = this.origin(el);
+    return this.toTop(el.ownerDocument, o.x, o.y);
   },
 
   onScreen(el) {

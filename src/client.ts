@@ -240,8 +240,71 @@ async function post(info: SessionInfo, command: Command): Promise<Reply> {
   return { text: body.text ?? '', state: body.state, messages: body.messages };
 }
 
+const lockFile = (name: string) => join(DIR, `${name}.lock`);
+const START_MS = 30_000; // how long a session may take to start
+
+/**
+ * Take the right to start the named session: one process at a time (an
+ * agent's MCP server and a command typed at the same moment would otherwise
+ * start two browsers, and the second would take over the session's file).
+ * False if another process holds it; a lock left by a process that's gone,
+ * or held longer than a start takes, is taken over.
+ */
+function takeLock(name: string): boolean {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(lockFile(name), 'wx');
+      writeFileSync(fd, String(process.pid));
+      closeSync(fd);
+      return true;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+    }
+    let stale = true;
+    try {
+      const pid = Number(readFileSync(lockFile(name), 'utf8'));
+      const age = Date.now() - statSync(lockFile(name)).mtimeMs;
+      process.kill(pid, 0); // throws if it's gone
+      stale = age > START_MS + 5000;
+    } catch {}
+    if (!stale) return false;
+    rmSync(lockFile(name), { force: true });
+  }
+  return false;
+}
+
+/** Another process is starting the session: wait for it to be up. */
+async function startedElsewhere(name: string): Promise<SessionInfo> {
+  const deadline = Date.now() + START_MS + 5000;
+  while (Date.now() < deadline) {
+    const info = readSessionInfo(name);
+    if (info) return info;
+    let locked = true;
+    try {
+      statSync(lockFile(name));
+    } catch {
+      locked = false;
+    }
+    if (!locked && !readSessionInfo(name)) throw new Error(`the session failed to start in another medley; see ${logFile(name)}`);
+    await sleep(50);
+  }
+  throw new Error(`timed out waiting for another medley to start the session; see ${logFile(name)}`);
+}
+
 async function startDaemon(name: string, opts: StartOptions): Promise<SessionInfo> {
   mkdirSync(DIR, { recursive: true });
+  if (!takeLock(name)) return startedElsewhere(name);
+  try {
+    // Started by another process while this one waited for the lock.
+    const info = readSessionInfo(name);
+    if (info) return info;
+    return await spawnDaemon(name, opts);
+  } finally {
+    rmSync(lockFile(name), { force: true });
+  }
+}
+
+async function spawnDaemon(name: string, opts: StartOptions): Promise<SessionInfo> {
   removeSessionInfo(name);
   const args = [fileURLToPath(new URL('./daemon.ts', import.meta.url)), '--name', name];
   if (opts.headed) args.push('--headed');
@@ -259,7 +322,7 @@ async function startDaemon(name: string, opts: StartOptions): Promise<SessionInf
   child.unref();
   closeSync(log);
 
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + START_MS;
   while (Date.now() < deadline) {
     const info = readSessionInfo(name);
     if (info) return info;

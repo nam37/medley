@@ -422,7 +422,11 @@ class Renderer {
     if (n.d === 'i' && !structural) {
       if (n.ref && !n.c) return this.append(st, this.refToken(n));
       if (n.tag === 'img' || n.tag === 'iframe' || n.tag === 'embed') return this.append(st, this.embedToken(n));
-      if (n.ref) this.append(st, this.refPrefix(n));
+      if (n.ref) {
+        const prefix = this.refPrefix(n);
+        if (!this.labels.has(n.ref)) this.labels.set(n.ref, prefix); // its text is its children's, told apart below
+        this.append(st, prefix);
+      }
       if (n.box) st.buf += ' ';
       for (const c of n.c ?? []) this.node(c, st);
       if (n.box) st.buf += ' ';
@@ -496,7 +500,10 @@ class Renderer {
     const lines = this.contents(n.c);
     const prefix = this.refPrefix(n);
     const i = lines.findIndex(nonEmpty);
-    if (i < 0) return [prefix];
+    if (i < 0) {
+      this.labels.set(n.ref!, prefix); // nothing in it to name it by (a picture without alt text)
+      return [prefix];
+    }
     const out = lines.slice();
     const m = /^((?:\u0001\d+\u0002)?)(#{1,6} )(.*)$/.exec(out[i]); // keep a heading's #'s in front
     out[i] = m ? m[1] + m[2] + prefix + m[3] : prefix + out[i];

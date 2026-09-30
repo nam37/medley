@@ -64,12 +64,27 @@ function myers(a: string[], b: string[], maxD: number): Op[] | null {
   return ops.reverse();
 }
 
+/**
+ * Which lines are code: inside ``` fences, or a fence. A page's code (a
+ * snippet of a page, as on medley's own site) has lines that look like
+ * headings, dividers and refs but aren't.
+ */
+export function fencedLines(lines: string[]): boolean[] {
+  let open = false;
+  return lines.map((l) => {
+    if (!l.startsWith('```')) return open;
+    open = !open;
+    return true;
+  });
+}
+
 /** The landmark and heading a line sits under, from the lines before it. */
 function section(ops: Op[], before: number): string {
   let heading = '';
+  const code = fencedLines(ops.map(([t, l]) => (t === '-' ? '' : l)));
   for (let i = before - 1; i >= 0; i--) {
     const [t, line] = ops[i];
-    if (t === '-') continue; // label by the page as it is now
+    if (t === '-' || code[i]) continue; // label by the page as it is now, and not by its code
     if (!heading && /^#{1,6} /.test(line)) heading = line;
     const lm = /^── (.*) ──$/.exec(line);
     if (lm) return heading ? `${lm[1]} › ${heading}` : lm[1];

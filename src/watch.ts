@@ -23,7 +23,6 @@ export async function watchFiles(o: WatchOptions): Promise<void> {
   const first = await request(o.session, { cmd: 'snapshot', args: { outline: true }, client: o.client });
   const [title = '', meta = ''] = first.text.split('\n').filter((l) => !l.startsWith('note: '));
   const page = `"${title}" (${meta.split(' · ')[0]})`;
-  o.print(`watching ${o.dir}: when files change, ${o.hot ? `waiting for ${page} to update itself` : `reloading ${page}`} and saying how its text changed (Ctrl+C stops)`);
 
   const changed = new Set<string>();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -59,6 +58,8 @@ export async function watchFiles(o: WatchOptions): Promise<void> {
     clearTimeout(timer);
     timer = setTimeout(run, QUIET_MS);
   });
+  // Said once it's watching, so a save made on seeing this is never missed.
+  o.print(`watching ${o.dir}: when files change, ${o.hot ? `waiting for ${page} to update itself` : `reloading ${page}`} and saying how its text changed (Ctrl+C stops)`);
   await new Promise<void>((resolve) => {
     const stop = () => {
       watcher.close();

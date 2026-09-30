@@ -8,6 +8,7 @@ import { parseCommand, splitFlags, tokenize } from '../src/commands.ts';
 import { parseScript, scriptVars, stepCommand, stepFor, toPlaywright } from '../src/script.ts';
 
 let failures = 0;
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const check = (what: string, ok: boolean, got = '') => {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`);
   if (!ok) {
@@ -72,7 +73,32 @@ r = roundTrip('click', { ref: 6 });
 check('a name two elements share is kept as the number, with a note', r.step.line === 'click 6' && !!r.step.note, `${r.step.line}\n${r.step.note}`);
 
 r = roundTrip('expect', { text: 'Line one\nLine two' });
-check('expect with a line break', r.back?.args.text === 'Line one\nLine two', r.step.line);
+check('expect with a line break', same(r.back?.args.checks, [{ kind: 'text', text: 'Line one\nLine two' }]), r.step.line);
+
+// Checks of every kind read back as they were asked, elements by kind and name, in one step.
+const asked = [
+  { kind: 'text', text: '--gone is an option', gone: true },
+  { kind: 'count', text: 'button Add to cart', n: 2 },
+  { kind: 'url', text: '/cart?step=2' },
+  { kind: 'title', text: 'Your "cart"' },
+  { kind: 'value', ref: '4', text: 'a=b, and ${x}' },
+  { kind: 'value', ref: '2', text: 'hunter2' },
+  { kind: 'state', ref: '3', state: 'disabled' },
+  { kind: 'errors' },
+];
+r = roundTrip('expect', { checks: asked, seconds: 12 }, { PASSWORD: 'hunter2' });
+const named = asked.map((c) => (c.ref === '4' ? { ...c, ref: 'textbox Note' } : c.ref === '2' ? { ...c, ref: 'password Password' } : c.ref === '3' ? { ...c, ref: 'button Say "hi"' } : c));
+check('expect with every kind of check: one line, read back the same', r.steps.length === 1 && same(r.back?.args.checks, named) && r.back?.args.seconds === 12, `${r.step.line}\n${JSON.stringify(r.back?.args)}`);
+check('a password it checks is ${PASSWORD}', r.step.line.includes('password Password=${PASSWORD}') && !r.step.line.includes('hunter2') && scriptVars(r.steps).join() === 'PASSWORD', r.step.line);
+
+r = roundTrip('expect', { text: 'In stock', count: 3, fields: [{ ref: 1, value: 'hi' }], states: [{ ref: 'Message', is: 'focused' }], no_errors: true });
+check("an agent's checks (text and count, fields, states, no_errors) as a step",
+  r.step.line === 'expect --count 3 --value "textbox Message=hi" --focused "textbox Message" --no-errors In stock', r.step.line);
+
+const typedCheck = splitFlags(tokenize(`expect --checked "checkbox Agree" "--url" is text`));
+check('a quoted "--url" in an expect is text to look for', same(parseCommand(typedCheck.words, typedCheck.flags).args.checks, [{ kind: 'text', text: '--url is text' }, { kind: 'state', ref: 'checkbox Agree', state: 'checked' }]));
+const notExpect = splitFlags(tokenize('type 4 --checked out'));
+check("expect's options are words in other commands", parseCommand(notExpect.words, notExpect.flags).args.text === '--checked out');
 
 r = roundTrip('dialog', { action: 'accept', text: "It's \"quoted\"" });
 check('a prompt answer with both quotes', r.back?.args.text === "It's \"quoted\"", r.step.line);
@@ -90,6 +116,7 @@ const script = parseScript(
     `type "textbox Message" $'two\\nlines'`,
     'click button Sign in',
     'dialog accept "yes, please"',
+    'expect --unchecked "checkbox Remember me" --no-errors Welcome back',
   ].join('\n'),
 );
 const test = toPlaywright(script, 'signin.medley');
@@ -97,6 +124,11 @@ check('Playwright: ${PASSWORD} from the environment', test.includes(".fill((proc
 check('Playwright: a literal ${HOME} stays text', test.includes('.fill("costs ${HOME}");'), test);
 check('Playwright: a line break as \\n', test.includes('.fill("two\\nlines");'), test);
 check("Playwright: a prompt's answer set up before the click", test.includes(`page.once('dialog', (dialog) => dialog.accept("yes, please"));`), test);
+check('Playwright: checks as assertions, errors heard from the start',
+  test.includes(`await expect(page.getByText("Welcome back").first()).toBeVisible();`) &&
+  test.includes(`await expect(page.getByRole('checkbox', { name: "Remember me" })).not.toBeChecked();`) &&
+  test.indexOf("page.on('console'") > 0 && test.indexOf("page.on('console'") < test.indexOf('page.goto(') &&
+  test.includes("  expect(errors, 'errors the page logged').toEqual([]);"), test);
 
 console.log(failures ? `\n${failures} failed` : '\nall passed');
 process.exit(failures ? 1 : 0);

@@ -7,6 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
+import { checksOf } from './checks.ts';
 import { codeStamp, removeSessionInfo, writeSessionInfo, type Command, type SessionEvent } from './client.ts';
 import { infoText } from './info.ts';
 import { defaultScriptFile, Recording, stepFor } from './script.ts';
@@ -351,7 +352,7 @@ async function dispatch({ cmd, args = {} }: Command, client: string): Promise<st
       return session.wait(client, Math.min(Number(args.seconds) || 2, 60), !!args.diff);
     }
     case 'expect':
-      return session.expect(String(args.text ?? ''), { gone: !!args.gone, seconds: Math.min(Number(args.seconds) || 5, 60) });
+      return session.expect(client, checksOf(args), Math.min(Number(args.seconds) || 5, 60));
     case 'audit':
       return session.audit(client, { json: !!args.json });
     case 'record':

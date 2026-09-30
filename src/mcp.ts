@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
+import { STATES } from './checks.ts';
 import { CommandError, request, type StartOptions } from './client.ts';
 import { searchUrl, toUrl } from './commands.ts';
 import { parseScript, replay, replaySummary, stepLines } from './script.ts';
@@ -46,13 +47,17 @@ Anywhere a ref goes, the element's name works too ("Add to cart"). After an
 action, notes say if the page logged errors or its requests failed;
 browser_console and browser_network show them. For a page you're building,
 browser_reload with diff=true after an edit says how its text changed, and
-browser_audit checks its accessibility.
+browser_audit checks its accessibility. browser_expect says whether a change
+worked, in one call: that some text is there (or gone, or there so many
+times), what the address and title are, what fields hold, whether controls are
+checked, enabled or focused, and that the page logged no errors. It fails,
+saying what is so instead, so you needn't read the page again to be sure.
 
 browser_record writes down what's done in the session (by you, or your user in
 the terminal UI) as a script of steps that name what they act on; your user can
 replay it without you (medley replay), or you can with browser_replay, for a
-chore done again or a check that a site still works. browser_expect adds a
-check to a script: it fails when text isn't on the page.
+chore done again or a check that a site still works. A browser_expect made
+while recording becomes a check in the script.
 
 Your user may be watching this browser in medley's terminal UI, and can talk to you
 there. What they say comes at the start of a tool result, in its own block that
@@ -231,8 +236,21 @@ const TOOLS: Tool[] = [
     name: 'browser_expect',
     cmd: 'expect',
     description:
-      'Check that `text` is on the page (its text or title, in any case), or with gone=true that it is not, waiting up to `seconds` (default 5) for it to be so; an error if not. While recording, it becomes a check in the script.',
-    inputSchema: { type: 'object', properties: { text: { type: 'string' }, gone: { type: 'boolean' }, seconds: { type: 'number' } }, required: ['text'] },
+      'Check that things are so on the page, waiting up to `seconds` (default 5) for all of them to be; if one is not, an error saying what is so instead. For confirming that a change worked. Any of these, together: `text` is on the page (its text or title, in any case); with gone=true it is not; with `count` it is there that many times, and text that starts with a kind of element counts those ("button Remove": the buttons with Remove in their names; "checkbox": every checkbox). `url`: the address has that text. `title`: the title does. `fields`: each field holds exactly that value, given as browser_fill takes them (the text or value of an option for a select, "on" or "off" for a checkbox). `states`: each element is in that state. no_errors=true: since it loaded, the page has logged no errors and none of its own requests failed. While recording, it becomes a check in the script.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string' },
+        gone: { type: 'boolean' },
+        count: { type: 'integer' },
+        url: { type: 'string' },
+        title: { type: 'string' },
+        fields: { type: 'array', items: { type: 'object', properties: { ref: REF, value: { type: 'string' } }, required: ['ref', 'value'] } },
+        states: { type: 'array', items: { type: 'object', properties: { ref: REF, is: { type: 'string', enum: [...STATES] } }, required: ['ref', 'is'] } },
+        no_errors: { type: 'boolean' },
+        seconds: { type: 'number' },
+      },
+    },
   },
   {
     name: 'browser_record',

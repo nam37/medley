@@ -16,7 +16,7 @@
   "scripts": {
     "tui": "bun src/medley.ts tui",
     "snapshot": "bun src/medley.ts snapshot",
-    "test": "bun test/script.ts && bun test/agent.ts && bun test/dev.ts && bun test/stability.ts && bun test/frames.ts && bun test/idle.ts && bun test/tui-smoke.ts",
+    "test": "bun test/script.ts && bun test/agent.ts && bun test/dev.ts && bun test/checks.ts && bun test/stability.ts && bun test/frames.ts && bun test/idle.ts && bun test/tui-smoke.ts",
     "test:script": "bun test/script.ts",
     "test:stability": "bun test/stability.ts",
     "test:tui": "bun test/tui-smoke.ts",
@@ -24,6 +24,7 @@
     "test:idle": "bun test/idle.ts",
     "test:agent": "bun test/agent.ts",
     "test:dev": "bun test/dev.ts",
+    "test:checks": "bun test/checks.ts",
     "image-compare": "bun scripts/image-compare.ts"
   },
   "dependencies": {

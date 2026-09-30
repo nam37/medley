@@ -481,6 +481,11 @@ export class Page {
     return this.targets.get(frameId) ?? this.frames.get(frameId)?.session;
   }
 
+  /** The frames from other sites, whose documents the page's own script can't read: each is asked by itself. */
+  get crossSiteFrames(): string[] {
+    return [...this.targets.keys()];
+  }
+
   /** The frames between the main frame and `frameId`, outermost first, ending with `frameId`. */
   frameChain(frameId: string): string[] {
     const chain: string[] = [];

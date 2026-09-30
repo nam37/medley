@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { readSessionInfo, saveScreenshot, send, STALE_HINT } from './client.ts';
 import { colorize } from './color.ts';
-import { parseCommand, toUrl, UsageError } from './commands.ts';
+import { CHECK_FLAGS, parseCommand, toUrl, UsageError } from './commands.ts';
 import { serveMcp } from './mcp.ts';
 import { parseScript, replay, replaySummary, stepLines, toPlaywright } from './script.ts';
 import { Session } from './session.ts';
@@ -57,6 +57,14 @@ session commands:
                                   without names, too little contrast, mouse-only controls, …
   expect <text>                   check the text is on the page (waiting up to 5s), or fail
   expect --gone <text>            check it isn't; in a script, these are its checks
+  expect --count <n> <text>       check it's there n times; "button Remove" counts buttons with
+                                  Remove in their names, "checkbox" every checkbox
+  expect --url <text>             check the address has the text; --title <text>, the title
+  expect --value <ref>=<text>     check a field holds exactly that (a checkbox: on or off)
+  expect --checked <ref>          check a control's state: --checked, --unchecked, --enabled,
+                                  --disabled, --focused, --expanded, --collapsed, --selected, --pressed
+  expect --no-errors              check the page logged no errors and none of its requests failed
+                                  (several checks can go in one expect; --within <seconds> to wait longer)
   record start [file]             write down what's done in this session, as a script of commands
                                   that name what they act on (default ~/.medley/recordings/…)
   record stop | status            stop, and print the script; or say how far it's got
@@ -128,6 +136,10 @@ const opts = {
   csv: false,
   max: undefined as number | undefined,
   json: false,
+  count: undefined as string | undefined,
+  within: undefined as string | undefined,
+  noErrors: false,
+  checks: [] as [string, string][],
   verbose: false,
   hot: false,
   color: !!process.stdout.isTTY && !process.env.NO_COLOR,
@@ -159,6 +171,10 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--csv') opts.csv = true;
   else if (a === '--max') opts.max = Number(value()) || fail('--max must be a number of characters');
   else if (a === '--json') opts.json = true;
+  else if (a === '--count') opts.count = value();
+  else if (a === '--within') opts.within = value();
+  else if (a === '--no-errors') opts.noErrors = true;
+  else if (CHECK_FLAGS.has(a)) opts.checks.push([a.slice(2), value()]);
   else if (a === '--verbose') opts.verbose = true;
   else if (a === '--hot') opts.hot = true;
   else if (a === '--color') opts.color = true;

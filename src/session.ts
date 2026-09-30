@@ -7,10 +7,11 @@ import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditText, type AuditResult } from './audit.ts';
 import { Browser, NoAnswer, sleep, type Dialog, type DownloadEvent, type LaunchOptions, type Page, type RequestEntry } from './browser.ts';
+import { countOf, meansOn, type Check, type State } from './checks.ts';
 import { diffLines, fencedLines, whereIs } from './diff.ts';
 import { ABOUT, siteOf, type About, type PageInfo } from './info.ts';
 import { parseKey } from './keys.ts';
-import { matchRef } from './names.ts';
+import { matchRef, parseLabel } from './names.ts';
 import type { RecordingStatus } from './script.ts';
 import { refTokens } from './tokens.ts';
 import { mainText, pageData, renderParts, type El, type LayoutGroup, type PageData, type PageModel, type Visual } from './render.ts';
@@ -302,16 +303,111 @@ const requestFailed = (r: RequestEntry) => (r.status !== undefined && r.status >
 /** How a request went wrong: its error status, or why it got none. */
 const failure = (r: RequestEntry) => (r.failed && r.failed !== 'canceled' ? r.failed : String(r.status ?? r.failed ?? '…'));
 
-/** A check, in the page, of whether its title or text has `text` (in any case). */
-const textProbe = (text: string) =>
-  `(() => (document.title + '\\n' + ((document.body && document.body.innerText) || '')).toLowerCase().includes(${JSON.stringify(text.toLowerCase())}))()`;
-
-// How long a check for text waits for the page to answer; a stuck page gets no more than this per look.
+// How long a check waits for the page to answer; a stuck page gets no more than this per look.
 const PROBE_MS = 2000;
 
 /** What a wait or a check says when the page never answered it: it doesn't know, rather than guessing. */
-const couldntTell = (text: string, what: string, seconds: number) =>
-  `couldn't tell whether "${text}" ${what}: the page didn't answer for ${seconds}s (a script on it may be stuck; reload stops it)`;
+const couldntTell = (claim: string, seconds: number) =>
+  `couldn't tell whether ${claim}: the page didn't answer for ${seconds}s (a script on it may be stuck; reload stops it)`;
+
+/** What checks read from the page (page-actions.js facts): how many times it has each text, and whether its title does. */
+interface Facts {
+  url: string;
+  title: string;
+  counts: number[];
+  titled: boolean[];
+}
+
+/** What checks read from an element (page-actions.js state); a state it doesn't have is null. */
+interface ElState {
+  error?: string;
+  value: string | null;
+  alt?: string; // a select's chosen option, by its value
+  select: boolean;
+  secret: boolean;
+  checked: boolean | null;
+  disabled: boolean;
+  focused: boolean;
+  expanded: boolean | null;
+  selected: boolean | null;
+  pressed: boolean | null;
+  active: number | null; // what has the focus: its ref in its document, and how it looks
+  activeText: string;
+}
+
+/** An element a check names, once found on the page. */
+interface Named {
+  ref: number;
+  label: string;
+}
+
+/**
+ * How a check stands: so, not so, or unknown (null: the page didn't answer).
+ * `said` is what's so, what was expected and what is instead, or what
+ * couldn't be told.
+ */
+interface Verdict {
+  ok: boolean | null;
+  said: string;
+}
+
+const times = (n: number) => (n === 1 ? 'once' : `${n} times`);
+
+/** A field's text in a message: in quotes, cut if long; a password's is never shown. */
+const held = (text: string, secret = false) => (secret ? 'the text given' : `"${text.length > 80 ? text.slice(0, 79) + '…' : text}"`);
+
+const KIND_WORDS: Record<string, [string, string]> = {
+  textbox: ['textbox', 'textboxes'],
+  combobox: ['combobox', 'comboboxes'],
+  checkbox: ['checkbox', 'checkboxes'],
+  password: ['password field', 'password fields'],
+  radio: ['radio button', 'radio buttons'],
+  file: ['file field', 'file fields'],
+  menuitem: ['menu item', 'menu items'],
+  draggable: ['draggable element', 'draggable elements'],
+  clickable: ['clickable element', 'clickable elements'],
+};
+const kindWord = (kind: string, n: number) => (KIND_WORDS[kind] ?? [kind, `${kind}s`])[n === 1 ? 0 : 1];
+
+/** A check of the page's text, address or title, against what the page says of them. */
+function factVerdict(c: Extract<Check, { kind: 'text' | 'count' | 'url' | 'title' }>, facts: Facts | null, i: number): Verdict {
+  const q = `"${c.text}"`;
+  if (c.kind === 'url') {
+    if (!facts) return { ok: null, said: `the address has ${q}` };
+    if (facts.url.includes(c.text)) return { ok: true, said: `the address has ${q} (${facts.url})` };
+    return { ok: false, said: `expected the address to have ${q}, but it's ${facts.url}` };
+  }
+  if (c.kind === 'title') {
+    if (!facts) return { ok: null, said: `the title has ${q}` };
+    if (facts.title.toLowerCase().includes(c.text.toLowerCase())) return { ok: true, said: `the title has ${q} ("${facts.title}")` };
+    return { ok: false, said: `expected the title to have ${q}, but it's "${facts.title}"` };
+  }
+  if (c.kind === 'count') {
+    if (!facts) return { ok: null, said: `${q} is on the page ${times(c.n)}` };
+    const n = facts.counts[i];
+    const is = n ? `on the page ${times(n)}` : 'not on the page';
+    return n === c.n ? { ok: true, said: `${q} is ${is}` } : { ok: false, said: `expected ${q} ${times(c.n)}, but it's ${is}` };
+  }
+  if (!facts) return { ok: null, said: c.gone ? `${q} is gone` : `${q} is on the page` };
+  const there = facts.counts[i] > 0 || facts.titled[i];
+  if (c.gone) return there ? { ok: false, said: `expected ${q} to be gone, but it's still on the page` } : { ok: true, said: `${q} isn't on the page` };
+  return there ? { ok: true, said: `${q} is on the page` } : { ok: false, said: `expected ${q} on the page, but it isn't there` };
+}
+
+/** A check of what a field holds: exactly the text; a select's option by its text or value; a checkbox on or off. */
+function valueVerdict(text: string, label: string, st: ElState): Verdict {
+  if (st.value === null && st.checked !== null) {
+    const word = (on: boolean) => (on ? 'checked' : 'unchecked');
+    const on = meansOn(text);
+    return st.checked === on ? { ok: true, said: `${label} is ${word(on)}` } : { ok: false, said: `expected ${label} to be ${word(on)}, but it's ${word(st.checked)}` };
+  }
+  if (st.value === null) return { ok: false, said: `expected ${label} to hold ${held(text)}, but it isn't a field: it holds nothing` };
+  const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+  const so = st.select ? same(st.value, text) || same(st.alt ?? '', text) : st.value === text;
+  if (so) return { ok: true, said: `${label} holds ${held(st.value, st.secret)}` };
+  const has = !st.value ? 'nothing' : st.secret ? 'something else' : held(st.value);
+  return { ok: false, said: `expected ${label} to hold ${held(text, st.secret)}, but it holds ${has}` };
+}
 
 /** A line with its refs' numbers taken out, for comparing two loads of a page (see diffLines). */
 const withoutRefs = (line: string) => line.replace(/\[\d+(?=[\] ])/g, '[#');
@@ -522,21 +618,21 @@ export class Session {
    * Not finding it isn't an error: the result says so, with what changed.
    */
   waitFor(client: string, text: string, { gone = false, seconds = 10 } = {}): Promise<string> {
-    // The page's title counts too: waiting for the next page is often waiting for its title.
-    const probe = textProbe(text);
     let what = '';
     return this.act(client, () => what, async () => {
       const start = Date.now();
       for (;;) {
         // Null when the page didn't answer (between documents, or stuck): that's no answer either way.
-        const present = await this.page.evaluate<boolean>(probe, PROBE_MS).catch(() => null);
+        // The page's title counts too: waiting for the next page is often waiting for its title.
+        const seen = await this.facts([text]);
+        const present = seen ? seen.counts[0] > 0 || seen.titled[0] : null;
         const took = ((Date.now() - start) / 1000).toFixed(1);
         if (present !== null && present !== gone) {
           what = gone ? `"${text}" went away after ${took}s` : `"${text}" appeared after ${took}s`;
           return;
         }
         if (Date.now() - start >= seconds * 1000) {
-          if (present === null) throw new Error(couldntTell(text, gone ? 'went away' : 'appeared', seconds));
+          if (present === null) throw new Error(couldntTell(`"${text}" ${gone ? 'went away' : 'appeared'}`, seconds));
           what = gone ? `"${text}" was still there after ${seconds}s` : `"${text}" didn't appear within ${seconds}s`;
           return;
         }
@@ -546,41 +642,177 @@ export class Session {
   }
 
   /**
-   * Check that `text` is on the page (its text or title, in any case), or
-   * with `gone` that it isn't, waiting up to `seconds` for it to be so. Not
-   * so by then is an error: a script's check that failed (see script.ts).
+   * Check that things are so on the page (see checks.ts), waiting up to
+   * `seconds` for all of them to be: some text is there (in the page's text
+   * or title, in any case), or gone, or there so many times; the address or
+   * the title has some text; a field holds a value; a control is in a state;
+   * the page logged no errors. Not so by then is an error saying what is
+   * instead: a script's check that failed (see script.ts). A page that didn't
+   * answer is an error too, never a pass.
    */
-  async expect(text: string, { gone = false, seconds = 5 } = {}): Promise<string> {
-    const want = text.trim();
-    if (!want) throw new Error('expect needs some text to look for');
+  async expect(client: string, checks: Check[], seconds = 5): Promise<string> {
+    if (!checks.length) throw new Error('expect needs something to check');
     if (this.dialog) throw new Error(this.dialogText());
     await this.ensureTab();
-    const probe = textProbe(want);
+    if (checks.some((c) => 'ref' in c && /^\d+$/.test(c.ref))) await this.checkRefs(client);
+    if (checks.some((c) => c.kind === 'errors')) await this.hearConsole();
+    const found = new Map<Check, Named>(); // the elements that checks name, once found on the page
     const start = Date.now();
+    let verdicts: Verdict[];
     for (;;) {
-      // Null when the page didn't answer (between documents, or stuck): that's no answer either way.
-      const present = await this.page.evaluate<boolean>(probe, PROBE_MS).catch(() => null);
-      if (present !== null && present !== gone) break;
-      if (Date.now() - start >= seconds * 1000) {
-        if (present === null) throw new Error(couldntTell(want, gone ? 'is gone' : 'is on the page', seconds));
-        const at = await this.page.evaluate<{ title: string; url: string }>('({ title: document.title, url: location.href })').catch(() => null);
-        const page = at ? ` (the page is "${at.title || '(untitled)'}", ${at.url})` : '';
-        throw new Error(
-          gone
-            ? `expected "${want}" to be gone, but after ${seconds}s it's still on the page${page}`
-            : `expected "${want}" on the page, but after ${seconds}s it isn't there${page}`,
-        );
-      }
+      verdicts = await this.look(client, checks, found);
+      if (verdicts.every((v) => v.ok)) break;
+      if (this.dialog) throw new Error(this.dialogText());
+      if (Date.now() - start >= seconds * 1000) throw new Error(await this.notSo(verdicts, seconds));
       await sleep(250);
     }
-    if (gone) return `ok: "${want}" isn't on the page`;
-    // The line it's on, and where that is, as find shows it.
-    const snap = await this.capture();
-    const i = snap.body.findIndex((l) => l.toLowerCase().includes(want.toLowerCase()));
-    if (i < 0) return `ok: "${want}" is on the page`;
-    const where = whereIs(snap.body, i);
-    const line = snap.body[i].trim();
-    return `ok: "${want}" is on the page${where ? ` · ${where}` : ''} · ${line.length > 120 ? line.slice(0, 119) + '…' : line}`;
+    // Text that's there: the line it's on, and where that is, as find shows it.
+    const snap = checks.some((c) => c.kind === 'text' && !c.gone) ? await this.capture().catch(() => null) : null;
+    const lines = verdicts.map((v, i) => {
+      const c = checks[i];
+      const at = snap && c.kind === 'text' && !c.gone ? snap.body.findIndex((l) => l.toLowerCase().includes(c.text.toLowerCase())) : -1;
+      if (at < 0) return `ok: ${v.said}`;
+      const where = whereIs(snap!.body, at);
+      const line = snap!.body[at].trim();
+      return `ok: ${v.said}${where ? ` · ${where}` : ''} · ${line.length > 120 ? line.slice(0, 119) + '…' : line}`;
+    });
+    return lines.join('\n');
+  }
+
+  /** How each check stands right now. */
+  private async look(client: string, checks: Check[], found: Map<Check, Named>): Promise<Verdict[]> {
+    // Text is looked for in the page's text; a count of a kind of element ("button Remove"), among its elements.
+    const counted = (c: Check) => c.kind === 'text' || (c.kind === 'count' && !countOf(c.text));
+    const texts = checks.filter(counted).map((c) => (c as { text: string }).text);
+    const facts = checks.some((c) => counted(c) || c.kind === 'url' || c.kind === 'title') ? await this.facts(texts) : null;
+    // The page as it is now, read once, and only if a check needs its elements.
+    let reading: Promise<Snap | null> | undefined;
+    const now = () => (reading ??= this.capture().catch(() => null));
+    let text = 0;
+    const out: Verdict[] = [];
+    for (const c of checks) {
+      if (c.kind === 'errors') out.push(this.errorsVerdict());
+      else if (c.kind === 'value' || c.kind === 'state') out.push(await this.elementVerdict(client, c, found, now));
+      else if (c.kind === 'count' && !counted(c)) out.push(await this.countVerdict(c, now));
+      else out.push(factVerdict(c, facts, counted(c) ? text++ : -1));
+    }
+    return out;
+  }
+
+  /** What failed checks say: what was expected and what is instead, then what couldn't be told, then what was fine. */
+  private async notSo(verdicts: Verdict[], seconds: number): Promise<string> {
+    const failed = verdicts.filter((v) => v.ok === false).map((v) => v.said);
+    const unknown = verdicts.filter((v) => v.ok === null).map((v) => couldntTell(v.said, seconds));
+    const fine = verdicts.filter((v) => v.ok).map((v) => `ok: ${v.said}`);
+    if (failed.length) {
+      const at = await this.page.evaluate<{ title: string; url: string }>('({ title: document.title, url: location.href })', PROBE_MS).catch(() => null);
+      failed[0] += ` (after ${seconds}s${at ? `; the page is "${at.title || '(untitled)'}", ${at.url}` : ''})`;
+    }
+    return [...failed, ...unknown, ...fine].join('\n');
+  }
+
+  /**
+   * The page's address and title, and how many times its text has each of
+   * `texts`, in its frames too; null when it didn't answer (between
+   * documents, or stuck in a script).
+   */
+  private async facts(texts: string[]): Promise<Facts | null> {
+    const ask = `(${ACTIONS}).facts(${JSON.stringify(texts)})`;
+    const top = await this.page.evaluate<Facts>(ask, PROBE_MS).catch(() => null);
+    if (!top || !texts.length) return top;
+    // Frames from other sites keep their text to themselves: each is asked.
+    const inner = await Promise.all(this.page.crossSiteFrames.map((f) => this.page.evaluateIn<Facts>(f, ask, PROBE_MS).catch(() => null)));
+    for (const f of inner) f?.counts.forEach((n, i) => (top.counts[i] += n));
+    return top;
+  }
+
+  /** How many elements of a kind there are ("button Remove": buttons with Remove in their names), as snapshots show them. */
+  private async countVerdict(c: { text: string; n: number }, now: () => Promise<Snap | null>): Promise<Verdict> {
+    const { kind, name } = countOf(c.text)!;
+    const many = (n: number) => `${n || 'no'} ${kindWord(kind, n)}${name ? ` called "${name}"` : ''}`;
+    const are = (n: number) => `there ${n === 1 ? 'is' : 'are'} ${many(n)}`;
+    const snap = await now();
+    if (!snap) return { ok: null, said: are(c.n) };
+    const fit = [...snap.labels.values()].filter((label) => {
+      const l = parseLabel(label);
+      return l.kind === kind && l.name.toLowerCase().includes(name.toLowerCase());
+    });
+    if (fit.length === c.n) return { ok: true, said: are(c.n) };
+    const list = fit.length ? `: ${fit.slice(0, 6).join(', ')}${fit.length > 6 ? ', …' : ''}` : '';
+    return { ok: false, said: `expected ${many(c.n)}, but ${are(fit.length)}${list}` };
+  }
+
+  /**
+   * A check of an element: what it holds, or a state it's in. One given by
+   * name is looked for on the page as it is now, and again if the page has
+   * since drawn it anew; a name that fits several is an error, not a wait.
+   */
+  private async elementVerdict(
+    client: string,
+    c: Extract<Check, { kind: 'value' | 'state' }>,
+    found: Map<Check, Named>,
+    now: () => Promise<Snap | null>,
+  ): Promise<Verdict> {
+    const so = (label: string) =>
+      c.kind === 'state' ? `${label} is ${c.state}` : `${label} holds ${held(c.text, parseLabel(label).kind === 'password')}`;
+    const wanted = (label: string) =>
+      `expected ${label} ${c.kind === 'state' ? `to be ${c.state}` : `to hold ${held(c.text, parseLabel(label).kind === 'password')}`}`;
+    const numbered = /^\d+$/.test(c.ref);
+    let el = numbered ? { ref: Number(c.ref), label: this.label(client, Number(c.ref)) } : found.get(c);
+    if (!el) {
+      const snap = await now();
+      if (!snap) return { ok: null, said: so(`"${c.ref}"`) };
+      const ref = matchRef(snap.labels, c.ref, false);
+      if (ref === null) return { ok: false, said: `${wanted(`"${c.ref}"`)}, but nothing on the page is called that` };
+      el = { ref, label: snap.labels.get(ref)! };
+      found.set(c, el);
+    }
+    let st: ElState;
+    try {
+      st = await this.askRef<ElState>(PROBE_MS, 'state', el.ref);
+    } catch (e) {
+      if (e instanceof NoAnswer) return { ok: null, said: so(el.label) };
+      st = { error: (e as Error).message } as ElState;
+    }
+    if (st.error) {
+      found.delete(c);
+      return { ok: false, said: `${wanted(el.label)}, but ${st.error}` };
+    }
+    if (c.kind === 'value') return valueVerdict(c.text, el.label, st);
+    const not = (b: boolean | null) => (b === null ? null : !b);
+    const is: Record<State, boolean | null> = {
+      checked: st.checked,
+      unchecked: not(st.checked),
+      enabled: !st.disabled,
+      disabled: st.disabled,
+      focused: st.focused,
+      expanded: st.expanded,
+      collapsed: not(st.expanded),
+      selected: st.selected,
+      pressed: st.pressed,
+    };
+    if (is[c.state]) return { ok: true, said: so(el.label) };
+    let but: string;
+    if (c.state === 'focused') but = st.activeText ? `the focus is on ${this.focusLabel(client, el.ref, st)}` : 'nothing has the focus';
+    else if (c.state === 'enabled' || c.state === 'disabled') but = `it's ${st.disabled ? 'disabled' : 'enabled'}`;
+    else if (c.state === 'checked' || c.state === 'unchecked') but = st.checked === null ? "it isn't a checkbox or a radio button" : `it's ${st.checked ? 'checked' : 'unchecked'}`;
+    else if (c.state === 'expanded' || c.state === 'collapsed') but = st.expanded === null ? "it doesn't say whether it's open (it has no aria-expanded)" : `it's ${st.expanded ? 'expanded' : 'collapsed'}`;
+    else but = is[c.state] === null ? `it doesn't say (it has no aria-${c.state})` : "it isn't";
+    return { ok: false, said: `${wanted(el.label)}, but ${but}` };
+  }
+
+  /** What has the focus in place of `ref`: as this client's snapshot shows it, or as it looks on the page. */
+  private focusLabel(client: string, ref: number, st: ElState): string {
+    const key = this.refs?.map.resolve(ref)?.key ?? TOP;
+    const at = st.active === null ? undefined : this.refs?.map.lookup(key, st.active);
+    return (at === undefined ? undefined : this.baselines.get(client)?.labels.get(at)) ?? st.activeText;
+  }
+
+  /** That nothing went wrong since the page loaded: the errors it logged and its own requests that failed, as notes tell them. */
+  private errorsVerdict(): Verdict {
+    const notes = this.problemNotes(0);
+    if (notes.length) return { ok: false, said: `expected no errors, but ${notes.join('; ')}` };
+    return { ok: true, said: 'the page logged no errors, and none of its own requests failed' };
   }
 
   async select(client: string, ref: number, option: string): Promise<string> {
@@ -903,9 +1135,7 @@ export class Session {
   /** What the page logged: errors and warnings (all of it with `all`), newest last. */
   async consoleText({ all = false } = {}): Promise<string> {
     await this.ensureTab();
-    const fresh = !this.page.watchingConsole;
-    await this.page.watchConsole();
-    if (fresh) await sleep(200); // what the browser kept from before arrives now
+    await this.hearConsole();
     const entries = this.page.console;
     const shown = entries.filter((e) => all || e.level === 'error' || e.level === 'warning');
     const errors = entries.filter((e) => e.level === 'error').length;
@@ -915,6 +1145,13 @@ export class Session {
     const more = shown.length > 100 ? [`… ${shown.length - 100} earlier ones left out`] : [];
     const hint = !all && entries.length > shown.length ? ['(--all for every message)'] : [];
     return [head, ...more, ...lines, ...hint].join('\n');
+  }
+
+  /** Listen to the page's console, if nothing was yet (see Page.watchConsole). */
+  private async hearConsole() {
+    const fresh = !this.page.watchingConsole;
+    await this.page.watchConsole();
+    if (fresh) await sleep(200); // what the browser kept from before arrives now
   }
 
   /** The page's requests that failed (every request with `all`), in the order they were made. */
@@ -1474,13 +1711,18 @@ export class Session {
    * same way, before any action: see checkRefs.)
    */
   private callRef<T>(method: string, ref: number, ...args: unknown[]): Promise<T> {
+    return this.askRef<T>(undefined, method, ref, ...args);
+  }
+
+  /** callRef, giving the page `timeout` ms to answer (NoAnswer if it doesn't). */
+  private askRef<T>(timeout: number | undefined, method: string, ref: number, ...args: unknown[]): Promise<T> {
     const { frame, doc, local } = this.target(ref);
     const call = `(${ACTIONS}).${method}(${[local, ...args].map((a) => JSON.stringify(a)).join(', ')})`;
     const stale = `the frame ref ${ref} was in has loaded another page since; take a new snapshot`;
     const expression = frame
       ? `((window.__medley && window.__medley.doc) === ${JSON.stringify(doc)} ? ${call} : { error: ${JSON.stringify(stale)} })`
       : call;
-    return this.page.evaluateIn<T>(frame, expression);
+    return this.page.evaluateIn<T>(frame, expression, timeout);
   }
 
   /** Bring a frame (and any frames around it) into view, outermost first. */

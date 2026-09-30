@@ -186,6 +186,13 @@ medley network [--all]              the page's failed requests (--all: every req
 medley audit [--json]               check the page's accessibility, with the refs of what's wrong
 medley expect <text>                check the text is on the page (waiting up to 5s), or fail
 medley expect --gone <text>         check it isn't
+medley expect --count <n> <text>    check it's there n times ("button Remove" counts buttons by name)
+medley expect --url <text>          check the address has the text (--title <text>: the title)
+medley expect --value <ref>=<text>  check a field holds exactly that (a checkbox: on or off)
+medley expect --disabled <ref>      check a control's state: --enabled, --checked, --unchecked,
+                                    --focused, --expanded, --collapsed, --selected, --pressed
+medley expect --no-errors           check the page logged no errors and none of its requests failed
+                                    (several in one expect: all must be so; --within <seconds> waits longer)
 medley record start [file]          write down what's done in the session, as a script
 medley record stop | status         stop and print the script, or say how far it's got
 medley info [--json]                page info: connection and certificate, cookies and site data, about the page, loading
@@ -276,8 +283,10 @@ Some things are there to keep an agent's context small and its steps sure:
   every value a page logs, which is exactly what bot checks look for.
 
 Scripts and checks for web work are there too: `browser_record` and
-`browser_replay` (see Scripts, below), `browser_expect`, `browser_audit`, and
-`browser_reload` with `diff`.
+`browser_replay` (see Scripts, below), `browser_audit`, `browser_reload` with
+`diff`, and `browser_expect`, which tells an agent in one call whether its
+change worked (see Building a site): some text is there or gone, the address,
+what fields hold, whether a button is enabled, that nothing logged an error.
 
 A few of them save an agent round trips: `browser_fill` fills a whole form and
 reports once, `browser_wait` with `text` waits for something to show up (or go
@@ -341,8 +350,10 @@ expect Thanks
   tokens (signing in, filling in a form), or a check that a site still works.
   A name that isn't on the page yet is looked for again for a few seconds,
   since pages often draw a moment after they load.
-- **Checks:** `expect <text>` fails when the text isn't on the page within 5
-  seconds (`expect --gone` when it is). Recorded, it's a step like any other.
+- **Checks:** an `expect` (see Building a site, below) fails when what it
+  asks isn't so within 5 seconds. Recorded, it's a step like any other, and
+  it's what makes replaying a script a test: `expect --url /cart/done
+  --no-errors Order placed`.
 - **Secrets aren't kept.** What's typed into a password field, or a field
   named like a card number or a one-time code, is written as `${PASSWORD}`
   (or `${CARD_NUMBER}`), which replay reads from the environment.
@@ -362,6 +373,54 @@ expect Thanks
 
 ### Building a site
 
+- **`expect`** (MCP `browser_expect`) says whether a change worked, so nobody
+  has to read the page again and judge. It waits up to 5 seconds (`--within
+  <seconds>` for longer) for what it's asked to be so, and fails, with exit
+  status 1, saying what is so instead:
+
+  ```
+  medley expect Thanks for your order                    the text is on the page, or in its title
+  medley expect --gone Loading                           it isn't
+  medley expect --count 3 In stock                       it's there 3 times
+  medley expect --count 3 button Remove                  there are 3 buttons with Remove in their names
+  medley expect --url /cart/done --title Thanks          the address has the text, and the title does
+  medley expect --value "textbox Email=ada@example.com"  the field holds exactly that
+  medley expect --disabled "button Place order"          the button is disabled
+  medley expect --no-errors                              the page logged no errors, none of its requests failed
+  ```
+
+  Several go in one expect, which passes when all of them are so, and
+  otherwise says which weren't, then which were:
+
+  ```
+  $ medley expect --url /cart --enabled "Place order" --no-errors
+  medley: expected [14 button "Place order"] to be enabled, but it's disabled (after 5s; the page is "Your cart", http://localhost:3000/cart)
+  ok: the address has "/cart" (http://localhost:3000/cart)
+  ok: the page logged no errors, and none of its own requests failed
+  ```
+
+  - Text is matched as people read it: in any case, any run of whitespace as
+    one space, and in the page's frames too.
+  - `--count` counts text, unless it starts with a kind of element (`button`,
+    `link`, `checkbox`, `textbox`, …): then it counts those elements, by the
+    names snapshots show (`button Remove` fits `[8 button "Remove Trail
+    shoes"]`), or all of that kind when there's no name.
+  - `--value` takes `field=text` as `fill` does: exactly the field's text, a
+    select's option by its text or value, `on` or `off` for a checkbox. A
+    password is compared but never shown.
+  - States are the words snapshots show after a control, and `enabled`:
+    `--checked`, `--unchecked`, `--enabled`, `--disabled`, `--focused`,
+    `--expanded`, `--collapsed`, `--selected`, `--pressed`. A wrong focus
+    says where the focus is.
+  - `--no-errors` is about the page since it loaded: errors it logged
+    (uncaught ones too), and requests to its own site for pages, scripts and
+    data that failed. It's what the notes after actions report.
+  - The address is matched as written; the title in any case.
+  - A page that doesn't answer fails the check ("couldn't tell whether…"):
+    no answer is never a pass.
+  - Over MCP the same checks are `text` (with `gone` or `count`), `url`,
+    `title`, `fields` (as `browser_fill` takes them), `states` and
+    `no_errors`. In the terminal UI, `:expect …` shows how each came out.
 - **`watch`** reloads the session's page whenever a file in the directory
   changes (`medley watch src`), and prints how its text changed, with any
   errors it logged. `--hot` is for dev servers that update the page
@@ -534,12 +593,12 @@ agent acting in the same session, reload, a file prompt, the working badge,
 a masked password prompt, a download, bookmarks and history, the refs list, find, a command,
 a mouse click, back, a `confirm()`, a page that moves on by itself, the picture
 viewer, page info, the source view, recording a script (the `● rec`
-badge, the script's box), `:audit`, the help overlay, and a search from the
+badge, the script's box), `:audit`, `:expect`, the help overlay, and a search from the
 address prompt. It prints each frame as it goes.
 `bun run test:stability` checks medley's word when things go wrong, against
 pages served for it: typing into comboboxes that won't take the focus or open
 a search box, a page stuck in a script (a click on it returns, a wait says it
-couldn't tell, reload frees it), a page held up by a script that never
+couldn't tell and checks don't pass, reload frees it), a page held up by a script that never
 arrives, tabs opened and closed leaving no listeners behind, `stop` while a
 command is stuck, a command whose sender gave up in line, and a failed replay
 over MCP.
@@ -547,6 +606,13 @@ over MCP.
 checks that a command keeps it going and that it then stops by itself; then
 that four commands run at once from four processes start one session between
 them.
+`bun run test:checks` checks `expect`, against a page served for it: text
+there, gone and counted (in frames from this site and another), elements
+counted by kind, the address and title, what fields hold (a password unseen),
+states, the focus, errors logged and requests failed, and what comes a moment
+later, each both passing and failing; then from the command line, recorded
+into a script, replayed (with a wrong password too), as a Playwright test, and
+asked for over MCP.
 `bun run test:dev` checks what developers lean on: `audit` against
 `test/a11y.html` (one of each problem, beside the same things done right),
 `expect`, recording the demo shop's form and replaying it in a fresh session,

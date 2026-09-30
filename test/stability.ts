@@ -82,6 +82,9 @@ try {
   r = await attempt(session.waitFor('t', 'Loading', { gone: true, seconds: 2 }));
   check(`waiting for text to go, on a page that can't answer: not "went away" (${seconds(t0).toFixed(1)}s)`,
     r.startsWith('error:') && r.includes("couldn't tell whether") && !r.includes('went away after'), r);
+  r = await attempt(session.expect('t', [{ kind: 'text', text: 'Loading', gone: true }, { kind: 'url', text: '/stuck' }, { kind: 'state', ref: 'button Mark', state: 'enabled' }], 2));
+  check("checks on a page that can't answer: none of them passes",
+    r.startsWith('error:') && (r.match(/couldn't tell whether/g) ?? []).length === 3 && !r.includes('ok:'), r);
   t0 = performance.now();
   r = await attempt(session.reload('t'));
   check(`reload stops the stuck script and reloads (${seconds(t0).toFixed(1)}s)`, r.includes('Loading') && r.includes('stuck') && seconds(t0) < 20, r);

@@ -16,9 +16,10 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
 import { sleep } from './browser.ts';
+import { checksOf, countOf, meansOn, type Check } from './checks.ts';
 import { request, type Command, type StartOptions } from './client.ts';
 import { parseCommand, splitFlags, tokenize, type Word } from './commands.ts';
-import { nameFor, parseLabel } from './names.ts';
+import { matchRef, nameFor, parseLabel } from './names.ts';
 
 // ---- recording ------------------------------------------------------------------
 
@@ -172,9 +173,39 @@ export function stepFor({ cmd, args = {} }: Command, labels: Map<number, string>
       else words = ['wait', ...(seconds.length ? seconds : ['2'])];
       break;
     }
-    case 'expect':
-      words = args.gone ? ['expect', '--gone', q(String(args.text))] : ['expect', t(String(args.text))];
+    case 'expect': {
+      // Its options, then the text it looks for (or counts), which needs no quotes as the last words.
+      words = ['expect'];
+      let last = '';
+      // An element as the step names it: its kind and name, whether it came as a number or a name.
+      const named = (ref: string): { n: number | null; name: string } => {
+        if (/^\d+$/.test(ref)) return { n: Number(ref), name: el(ref) };
+        let n: number | null = null;
+        try {
+          n = matchRef(labels, ref, false);
+        } catch {}
+        return { n, name: (n !== null && nameFor(labels, n)) || ref };
+      };
+      for (const c of checksOf(args)) {
+        if (c.kind === 'text' && c.gone) words.push('--gone', q(c.text));
+        else if (c.kind === 'text') last = t(c.text);
+        else if (c.kind === 'count') {
+          words.push('--count', String(c.n));
+          last = t(c.text);
+        } else if (c.kind === 'url' || c.kind === 'title') words.push(`--${c.kind}`, q(c.text));
+        else if (c.kind === 'state') words.push(`--${c.state}`, q(named(c.ref).name));
+        else if (c.kind === 'errors') words.push('--no-errors');
+        else {
+          const { n, name } = named(c.ref);
+          const field = name.includes('=') && n !== null ? String(n) : name; // a name with = in it would split wrongly
+          const secret = n === null ? null : secretOf(n, c.text);
+          words.push('--value', secret ? quote(`${field}=\${${secret}}`, false) : quote(`${field}=${c.text}`));
+        }
+      }
+      if (args.seconds !== undefined && Number(args.seconds) !== 5) words.push('--within', String(Number(args.seconds)));
+      if (last) words.push(last);
       break;
+    }
     case 'dialog':
       words = ['dialog', String(args.action), ...(args.text !== undefined ? [q(String(args.text))] : [])];
       break;
@@ -380,6 +411,53 @@ function locator(target: string): string {
   return `page.getByText(${js(kind === 'clickable' || kind === 'draggable' ? name : target)}).first()`;
 }
 
+// Playwright's matcher for each state a check can ask about, with its arguments.
+const STATE_MATCHERS: Record<string, [string, ...string[]]> = {
+  checked: ['toBeChecked'],
+  unchecked: ['not.toBeChecked'],
+  enabled: ['toBeEnabled'],
+  disabled: ['toBeDisabled'],
+  focused: ['toBeFocused'],
+  expanded: ['toHaveAttribute', "'aria-expanded'", "'true'"],
+  collapsed: ['toHaveAttribute', "'aria-expanded'", "'false'"],
+  selected: ['toHaveAttribute', "'aria-selected'", "'true'"],
+  pressed: ['toHaveAttribute', "'aria-pressed'", "'true'"],
+};
+
+/**
+ * A check as a Playwright assertion (without its await), or a // comment for
+ * one that doesn't translate. `timeout` is "{ timeout: 8000 }", or '' for
+ * Playwright's own.
+ */
+function assertion(c: Check, timeout: string): string {
+  // A matcher called with its arguments, the timeout last when there is one.
+  const m = (matcher: string, ...args: string[]) => `${matcher}(${[...args, timeout].filter(Boolean).join(', ')})`;
+  switch (c.kind) {
+    case 'text':
+      return `expect(page.getByText(${js(c.text)}).first()).${m(c.gone ? 'toBeHidden' : 'toBeVisible')}`;
+    case 'count': {
+      const of = countOf(c.text);
+      if (!of) return `expect(page.getByText(${js(c.text)})).${m('toHaveCount', String(c.n))}`;
+      if (!ROLES[of.kind]) return `// expect --count ${c.n} ${c.text}: count them with a locator of your own (Playwright has no role for "${of.kind}")`;
+      return `expect(page.getByRole('${ROLES[of.kind]}'${of.name ? `, { name: ${js(of.name)} }` : ''})).${m('toHaveCount', String(c.n))}`;
+    }
+    case 'url':
+      return `expect.${m('poll', '() => page.url()')}.toContain(${js(c.text)})`;
+    case 'title':
+      return `expect.${m('poll', 'async () => (await page.title()).toLowerCase()')}.toContain(${js(c.text)}.toLowerCase())`;
+    case 'value': {
+      const kind = /^(\w+) /.exec(c.ref)?.[1];
+      if (kind === 'checkbox' || kind === 'radio') return `expect(${locator(c.ref)}).${m(meansOn(c.text) ? 'toBeChecked' : 'not.toBeChecked')}`;
+      if (kind === 'select') return `expect(${locator(c.ref)}.locator('option:checked')).${m('toHaveText', js(c.text))}`;
+      return `expect(${locator(c.ref)}).${m('toHaveValue', js(c.text))}`;
+    }
+    case 'state':
+      return `expect(${locator(c.ref)}).${m(...STATE_MATCHERS[c.state])}`;
+    case 'errors':
+      return "expect(errors, 'errors the page logged').toEqual([])";
+  }
+}
+
 /**
  * The script as a Playwright test (@playwright/test), step for step, for a
  * test suite or CI. What doesn't translate (tabs, a ref kept as its number)
@@ -388,6 +466,7 @@ function locator(target: string): string {
 export function toPlaywright(steps: ScriptStep[], file: string): string {
   const name = basename(file, extname(file)) || 'medley script';
   const body: string[] = [];
+  let hearsErrors = false; // a step checks that the page logged no errors: the test listens for them from the start
   const todo = (step: ScriptStep, why: string) => body.push(`  // line ${step.line}: ${step.text} (${why})`);
   steps.forEach((step, i) => {
     let cmd: string;
@@ -453,8 +532,17 @@ export function toPlaywright(steps: ScriptStep[], file: string): string {
         if (args.gone !== undefined) return w(`page.getByText(${js(String(args.gone))}).first().waitFor({ state: 'hidden', timeout: ${ms} }).catch(() => {})`);
         return w(`page.waitForTimeout(${ms})`);
       }
-      case 'expect':
-        return w(`expect(page.getByText(${js(String(args.text))}).first()).${args.gone ? 'toBeHidden' : 'toBeVisible'}()`);
+      case 'expect': {
+        const timeout = args.seconds ? `{ timeout: ${Number(args.seconds) * 1000} }` : '';
+        for (const c of args.checks as Check[]) {
+          const line = assertion(c, timeout);
+          if (line.startsWith('//')) body.push(`  ${line}`);
+          else if (c.kind === 'errors') body.push(`  ${line};`); // nothing to wait for: they're counted as they're logged
+          else w(line);
+          if (c.kind === 'errors') hearsErrors = true;
+        }
+        return;
+      }
       case 'dialog':
         if (args.action === 'dismiss') body.push("  // the dialog is dismissed: Playwright's default");
         return; // accepting was set up before the step that opened it
@@ -462,11 +550,18 @@ export function toPlaywright(steps: ScriptStep[], file: string): string {
         return todo(step, "tabs and history don't translate one to one");
     }
   });
+  const hear = [
+    '  // What the page logs as errors, and its uncaught errors, for the checks below that there were none.',
+    '  const errors: string[] = [];',
+    "  page.on('console', (m) => m.type() === 'error' && !m.text().startsWith('Failed to load resource') && errors.push(m.text()));",
+    "  page.on('pageerror', (e) => errors.push(String(e)));",
+  ];
   return [
     `// Made by medley from ${basename(file)}.`,
     "import { test, expect } from '@playwright/test';",
     '',
     `test(${JSON.stringify(name)}, async ({ page }) => {`,
+    ...(hearsErrors ? hear : []),
     ...body,
     '});',
     '',

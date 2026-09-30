@@ -21,6 +21,7 @@ import type { RecordingStatus } from '../script.ts';
 import type { TalkEvent } from '../talk.ts';
 import { resolve } from 'node:path';
 import { addBookmark, readBookmarks, removeBookmark } from '../bookmarks.ts';
+import { checkName, type Check } from '../checks.ts';
 import { looksLikeAddress, parseCommand, searchUrl, splitFlags, splitWords, tokenize, toUrl } from '../commands.ts';
 import { changedLines } from '../diff.ts';
 import { infoText, type PageInfo } from '../info.ts';
@@ -83,7 +84,7 @@ type Tone = 'info' | 'ok' | 'warn' | 'error' | 'agent';
 const TONE = { info: THEME.text, ok: THEME.ok, warn: THEME.warn, error: THEME.error, agent: THEME.agent };
 
 // Commands whose result is a report to read, shown in a box: what the box is called.
-const REPORTS: Record<string, string> = { audit: 'accessibility', console: 'console', network: 'network', extract: 'data', record: 'the script' };
+const REPORTS: Record<string, string> = { audit: 'accessibility', console: 'console', network: 'network', extract: 'data', record: 'the script', expect: 'checks' };
 
 const HINTS = 'Tab select · Enter open · l refs · o address · ← back · / find · v grid · ? keys · q quit';
 const BADGE = ' medley ';
@@ -107,7 +108,8 @@ const HELP = [
   '/, then n N        find text, then the next or previous match',
   ':                  run a command: press Escape, wait 2, select 6 High, …',
   "                   audit checks accessibility; console, network: the page's errors;",
-  '                   record start … record stop writes down what you do, to replay',
+  '                   record start … record stop writes down what you do, to replay;',
+  '                   expect Thanks, expect --url /cart --no-errors: checks, kept in the script',
   'l, or click N refs  the page’s refs in a list: type to filter, Enter opens',
   't                  open the selected link in a new tab',
   'T, or click tab 2/3 the open tabs: a number, then Enter switches (d closes)',
@@ -437,7 +439,8 @@ export class App {
     if (cmd === 'screenshot') return this.say(saveScreenshot(reply.text, args.path as string | undefined), 'ok');
     // Reports of more than a line go in a box over the page, as page info does.
     const report = REPORTS[cmd];
-    if (report && (cmd !== 'record' || args.action === 'stop')) {
+    // A record that stopped shows its script; an expect of several things, how each came out.
+    if (report && (cmd !== 'record' || args.action === 'stop') && (cmd !== 'expect' || reply.text.includes('\n'))) {
       this.showInfo(reply.text, ` ${report} · any key closes `, cmd === 'audit' ? (l) => /^(audit:|problems|warnings)/.test(l) : (_, i) => i === 0);
       return this.say(reply.text.split('\n')[0], 'ok');
     }
@@ -1521,7 +1524,7 @@ export class App {
       case 'audit':
         return 'checking the page for accessibility';
       case 'expect':
-        return `looking for "${args.text}"`;
+        return `checking for ${(Array.isArray(args.checks) ? (args.checks as Check[]) : []).map(checkName).join(', ')}`;
       case 'stop':
         return 'stopping the session';
       default:

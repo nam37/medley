@@ -333,6 +333,19 @@ try {
   await keys('x');
   await until('the audit to close', (f) => !f.includes('accessibility · any key closes'));
 
+  // :expect with several checks shows how each came out; one that isn't so says what is, in the status line.
+  mockInput.pressKey(':');
+  await mockInput.typeText('expect --title "test app" --count 1 button Say hello');
+  mockInput.pressEnter();
+  show(':expect shows its checks', await until('the checks', (f) => f.includes('checks · any key closes') && f.includes('ok: the title has "test app"') && f.includes('ok: there is 1 button called "Say hello"')));
+  await keys('x');
+  await until('the checks to close', (f) => !f.includes('checks · any key closes'));
+  mockInput.pressKey(':');
+  await mockInput.typeText('expect --within 1 --disabled "button Say hello"');
+  mockInput.pressEnter();
+  await until('a check that is not so', (f) => f.includes("to be disabled, but it's enabled"));
+  console.log('\n:expect --disabled on an enabled button said so');
+
   await keys('?');
   // ? shows the keys: as many as fit in the terminal (24 rows here), scrolling for the rest.
   show('? shows the keys, as many as fit', await until('the help', (f) => /keys 1–\d+ of \d+/.test(f) && f.includes('Tab, Shift+Tab')));

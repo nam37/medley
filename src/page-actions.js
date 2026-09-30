@@ -320,6 +320,80 @@
     return { checked: el.getAttribute('aria-checked') === 'true' };
   },
 
+  // The text a person sees in a document, and in the frames in it that this
+  // document can read (same-origin ones; the session asks the others itself).
+  seenText(doc) {
+    const parts = [(doc.body && doc.body.innerText) || ''];
+    for (const frame of doc.querySelectorAll('iframe, frame')) {
+      let inner = null;
+      try {
+        inner = frame.contentDocument;
+      } catch {}
+      if (inner && frame.checkVisibility()) parts.push(this.seenText(inner));
+    }
+    return parts.join('\n');
+  },
+
+  // For checks (see Session.expect): the address and the title, and for each
+  // of `texts`, how many times the page's text has it (whitespace as single
+  // spaces, in any case) and whether the title does.
+  facts(texts) {
+    const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const text = norm(this.seenText(document));
+    const title = norm(document.title);
+    const times = (needle) => {
+      let n = 0;
+      if (needle) for (let i = text.indexOf(needle); i >= 0; i = text.indexOf(needle, i + needle.length)) n++;
+      return n;
+    };
+    const needles = texts.map(norm);
+    return { url: location.href, title: document.title, counts: needles.map(times), titled: needles.map((n) => !!n && title.includes(n)) };
+  },
+
+  // For checks: what a field holds (as a snapshot shows it, a password's not
+  // masked; null for what holds nothing), and the states it's in (null for
+  // one it doesn't have, such as `checked` on a button).
+  state(ref) {
+    const el = this.element(ref);
+    if (!el) return this.missing(ref);
+    const tag = el.localName;
+    const a = (name) => el.getAttribute(name);
+    const flag = (name) => (a(name) === null ? null : a(name) === 'true');
+    const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+    const tick = tag === 'input' && /^(checkbox|radio)$/.test(el.type);
+    const inner = /^(input|textarea|select)$/.test(tag) ? null : [...el.querySelectorAll('input, textarea')].find((f) => this.textField(f));
+    let value = null;
+    let alt;
+    if (tag === 'select') {
+      value = [...el.selectedOptions].map((o) => clean(o.text)).join(', ');
+      alt = [...el.selectedOptions].map((o) => o.value).join(', ');
+    } else if (tag === 'input' && el.type === 'file') value = [...(el.files || [])].map((f) => f.name).join(', ');
+    else if (tick) value = null;
+    else if (tag === 'input' || tag === 'textarea') value = el.value;
+    else if (el.isContentEditable) value = clean(el.innerText);
+    else if (inner) value = inner.value; // a widget around its field (a combobox)
+    else if (a('aria-valuetext') !== null || a('aria-valuenow') !== null) value = clean(a('aria-valuetext') || a('aria-valuenow'));
+    const doc = el.ownerDocument;
+    const active = this.activeIn(doc);
+    const idle = !active || active === doc.body || active === doc.documentElement;
+    const m = window.__medley;
+    return {
+      value,
+      alt,
+      select: tag === 'select',
+      secret: (tag === 'input' && el.type === 'password') || (!!inner && inner.type === 'password'),
+      checked: tick ? el.checked : a('aria-checked') === null ? null : a('aria-checked') === 'true',
+      disabled: el.matches(':disabled') || a('aria-disabled') === 'true',
+      focused: !idle && (active === el || this.contains(el, active)),
+      expanded: tag === 'summary' ? !!(el.parentElement && el.parentElement.open) : flag('aria-expanded'),
+      selected: tag === 'option' ? el.selected : flag('aria-selected'),
+      pressed: flag('aria-pressed'),
+      // What has the focus instead: its ref if a snapshot numbered it, and how it looks.
+      active: idle ? null : (m && m.ids.get(active)) || null,
+      activeText: idle ? '' : this.describe(active),
+    };
+  },
+
   // Check that a file field can take `count` files, before they're set on it.
   fileField(ref, count) {
     const el = this.element(ref);

@@ -2,6 +2,7 @@
 // CLI and the terminal UI's command line.
 
 import { resolve } from 'node:path';
+import { checksOf, EXPECT_USAGE, STATES } from './checks.ts';
 
 export interface ParsedCommand {
   cmd: string;
@@ -26,11 +27,20 @@ export interface CommandFlags {
   all?: boolean; // console --all, network --all
   csv?: boolean; // extract … --csv
   max?: number; // a size limit on page results (the CLI's --max)
+  count?: string; // expect --count <n> <text>
+  within?: string; // expect … --within <seconds>
+  noErrors?: boolean; // expect --no-errors
+  checks?: [string, string][]; // expect's other checks, in order: ['url', '/cart'], ['checked', 'checkbox Agree']
 }
 
 const FLAGS = new Set(['--links', '--diff', '--submit', '--hard', '--outline', '--full', '--new-tab', '--dom', '--reader', '--all', '--csv', '--json']);
 // Options followed by a value: wait --for "Order placed".
 const VALUE_FLAGS = new Set(['--for', '--gone', '--section']);
+// expect's own options (see checks.ts): they're options only in an expect, and words anywhere else.
+const EXPECT_FLAGS = new Set(['--no-errors']);
+const EXPECT_VALUE_FLAGS = new Set(['--count', '--within']);
+/** expect's checks that take a value, and may come several times: --url /cart --checked "checkbox Agree". */
+export const CHECK_FLAGS = new Set(['--url', '--title', '--value', ...STATES.map((s) => `--${s}`)]);
 
 export class UsageError extends Error {}
 
@@ -92,12 +102,17 @@ export function splitFlags(words: (string | Word)[]): { words: string[]; flags: 
   const rest: string[] = [];
   const key = (w: string) => w.slice(2).replace(/-(\w)/g, (_, c: string) => c.toUpperCase()); // --new-tab → newTab
   const list = words.map((w) => (typeof w === 'string' ? { text: w, quoted: '' } : w));
+  const expecting = list[0]?.text === 'expect';
+  const checks: [string, string][] = [];
   for (let i = 0; i < list.length; i++) {
     const { text, quoted } = list[i];
-    if (!quoted && FLAGS.has(text)) flags[key(text)] = true;
-    else if (!quoted && VALUE_FLAGS.has(text) && i + 1 < list.length) flags[key(text)] = list[++i].text;
+    const more = i + 1 < list.length;
+    if (!quoted && (FLAGS.has(text) || (expecting && EXPECT_FLAGS.has(text)))) flags[key(text)] = true;
+    else if (!quoted && more && (VALUE_FLAGS.has(text) || (expecting && EXPECT_VALUE_FLAGS.has(text)))) flags[key(text)] = list[++i].text;
+    else if (!quoted && more && expecting && CHECK_FLAGS.has(text)) checks.push([text.slice(2), list[++i].text]);
     else rest.push(text);
   }
+  if (checks.length) flags.checks = checks;
   return { words: rest, flags: flags as CommandFlags };
 }
 
@@ -181,9 +196,28 @@ export function parseCommand([command, ...rest]: string[], flags: CommandFlags =
     case 'wait':
       return { cmd: 'wait', args: { seconds: rest[0], for: flags.for, gone: flags.gone, diff: flags.diff } };
     case 'expect': {
-      const text = flags.gone ?? rest.join(' ');
-      if (!text) throw new UsageError('usage: expect <text> | expect --gone <text>');
-      return { cmd: 'expect', args: { text, gone: flags.gone !== undefined } };
+      // Several checks in one: the words are text to find (or, with --count, to count), the options the rest.
+      const checks: Record<string, unknown>[] = [];
+      const text = rest.join(' ');
+      if (flags.gone !== undefined) checks.push({ kind: 'text', text: flags.gone, gone: true });
+      if (flags.count !== undefined) checks.push({ kind: 'count', text, n: flags.count });
+      else if (text) checks.push({ kind: 'text', text });
+      for (const [name, value] of flags.checks ?? []) {
+        if (name === 'url' || name === 'title') checks.push({ kind: name, text: value });
+        else if (name === 'value') {
+          const at = value.indexOf('=');
+          if (at < 1) throw new UsageError(`"${value}" isn't field=value\n${EXPECT_USAGE}`);
+          checks.push({ kind: 'value', ref: value.slice(0, at), text: value.slice(at + 1) });
+        } else checks.push({ kind: 'state', ref: value, state: name });
+      }
+      if (flags.noErrors) checks.push({ kind: 'errors' });
+      const seconds = flags.within === undefined ? undefined : Number(flags.within);
+      if (seconds !== undefined && !(seconds > 0)) throw new UsageError(`"${flags.within}" isn't a number of seconds\n${EXPECT_USAGE}`);
+      try {
+        return { cmd: 'expect', args: { checks: checksOf({ checks }), ...(seconds ? { seconds } : {}) } };
+      } catch (e) {
+        throw new UsageError((e as Error).message);
+      }
     }
     case 'audit':
       return { cmd: 'audit', args: { json: flags.json } };

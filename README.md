@@ -43,13 +43,13 @@ over the DevTools protocol; the only package it depends on is
 git clone https://github.com/nam37/medley.git
 cd medley
 bun install
-bun src/cli.ts tui en.wikipedia.org
+bun src/medley.ts tui en.wikipedia.org
 ```
 
-The examples below write `medley` for `bun src/cli.ts`. To type it that way,
-add an alias, such as `alias medley="bun /path/to/medley/src/cli.ts"` in bash
-or zsh, or `function medley { bun C:\path\to\medley\src\cli.ts @args }` in
-PowerShell.
+The examples below write `medley` for `bun src/medley.ts`. To type it that way,
+add an alias, such as `alias medley="bun /path/to/medley/src/medley.ts"` in bash
+or zsh, or `function medley { bun C:\path\to\medley\src\medley.ts @args }` in
+PowerShell (in the file `$PROFILE` names, so every new window has it).
 
 A command takes as long as the page does to load and settle, plus Bun's own
 start (a few hundred milliseconds). The first command also starts the browser,
@@ -244,7 +244,7 @@ when it attaches.
 ### Use it from an agent
 
 ```
-claude mcp add medley -- bun /path/to/medley/src/cli.ts mcp
+claude mcp add medley -- bun /path/to/medley/src/medley.ts mcp
 ```
 
 The MCP tools (`browser_goto`, `browser_click`, `browser_type`, …) talk to the
@@ -548,9 +548,10 @@ looked, when the old number means something else), that a notice over the
 page stops clicks into frames under it (from another site and from this one),
 that a frame from this site is read in like one from another, and that a
 table's hidden rows and cells don't show.
-`bun scripts/site-shots.ts <dir> [--as <url>]` drives the terminal UI through
-the demo shop in `docs/demo/` and saves its frames as HTML; the website's
-terminal pictures come from it.
+`bun scripts/site-shots.ts <dir> [--as <url>] [--png <dir>]` drives the
+terminal UI through the demo shop in `docs/demo/` and saves its frames as
+HTML, and with `--png` as pictures too. The website's are made with
+`bun scripts/site-shots.ts <dir> --as https://nam37.github.io/medley/demo/ --png docs/assets`.
 `bun run image-compare [url] [--pictures 6]` compares ways of drawing pictures
 in the terminal it runs in, side by side: the half blocks advanced grid drew
 at first, OpenTUI's quadrant blocks, Sixel and Kitty graphics. It shows a test card

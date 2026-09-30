@@ -13,7 +13,7 @@ import { pathToFileURL } from 'node:url';
 
 const SESSION = 'dev-test';
 const OTHER = 'dev-test-replay';
-const cli = join(import.meta.dir, '..', 'src', 'cli.ts');
+const cli = join(import.meta.dir, '..', 'src', 'medley.ts');
 const page = (path: string) => pathToFileURL(path).href;
 // Without a PASSWORD of its own, so a script that reads one gets only the test's.
 const { PASSWORD: _, ...ENV } = process.env;

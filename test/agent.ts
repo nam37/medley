@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const SESSION = 'agent-test';
-const cli = join(import.meta.dir, '..', 'src', 'cli.ts');
+const cli = join(import.meta.dir, '..', 'src', 'medley.ts');
 const page = (name: string) => pathToFileURL(join(import.meta.dir, name)).href;
 const medley = (...args: string[]) => {
   const r = spawnSync(process.execPath, [cli, '--session', SESSION, '--no-color', ...args], { encoding: 'utf8' });

@@ -12,7 +12,7 @@ import { pathToFileURL } from 'node:url';
 import { logFile, readSessionInfo } from '../src/client.ts';
 
 const SESSION = 'idle-test';
-const cli = join(import.meta.dir, '..', 'src', 'cli.ts');
+const cli = join(import.meta.dir, '..', 'src', 'medley.ts');
 const page = pathToFileURL(join(import.meta.dir, 'app.html')).href;
 const env = { ...process.env, MEDLEY_IDLE_MINUTES: '0.05' }; // 3 s
 const medley = (...args: string[]) => spawnSync(process.execPath, [cli, '--session', SESSION, '--no-color', ...args], { env, encoding: 'utf8' });

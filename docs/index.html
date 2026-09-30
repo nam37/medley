@@ -210,24 +210,24 @@
         <p class="prose">A background session owns the browser. The terminal UI, the command line and every MCP connection are clients of that one session, so you see what the agent does as it happens, with its cursor on what it's working on. Press <kbd>&gt;</kbd> to tell it something. When it needs you, for a sign-in, a choice, or a yes before it buys anything, it asks and waits for your answer, and a <code>confirm()</code> on the page waits for you too.</p>
         <div class="steps">
           <div class="step">
-            <div class="shot"><img src="assets/tui-agent-typed.png" alt="medley's terminal UI on the demo page's form; the status line says, in purple, agent: typed into [12 textbox Email]." width="1726" height="1014" loading="lazy"></div>
+            <div class="shot"><img src="assets/tui-agent-typed.png" alt="medley's terminal UI on the demo page's form; the status line says, in purple, agent: typed into [12 textbox Email]." width="1716" height="1018" loading="lazy"></div>
             <h3>The agent fills the form</h3>
             <p><span class="who agent">agent</span> <code>type 12 sam@example.com</code>. Your terminal UI follows along and marks the line that changed.</p>
           </div>
           <div class="step">
-            <div class="shot"><img src="assets/tui-confirm.png" alt="The status line reads: the page asks (confirm): Send trail notes to sam@example.com? with the hint y accept, n dismiss." width="1726" height="1014" loading="lazy"></div>
+            <div class="shot"><img src="assets/tui-confirm.png" alt="The status line reads: the page asks (confirm): Send trail notes to sam@example.com? with the hint y accept, n dismiss." width="1716" height="1018" loading="lazy"></div>
             <h3>The page asks to confirm</h3>
             <p><span class="who agent">agent</span> <code>click 14</code> opens a <code>confirm()</code>. The page is blocked until someone answers it.</p>
           </div>
           <div class="step">
-            <div class="shot"><img src="assets/tui-accepted.png" alt="After pressing y: accepted the confirm, and the page now shows Thanks! Notes will go to sam@example.com." width="1726" height="1014" loading="lazy"></div>
+            <div class="shot"><img src="assets/tui-accepted.png" alt="After pressing y: accepted the confirm, and the page now shows Thanks! Notes will go to sam@example.com." width="1716" height="1018" loading="lazy"></div>
             <h3>You answer it</h3>
             <p><span class="who you">you</span> press <kbd>y</kbd> in the terminal UI (or run <code>dialog accept</code>), and the page carries on.</p>
           </div>
         </div>
         <div class="code" style="margin-top: 28px">
-<pre class="medley" aria-label="Add medley to Claude Code as an MCP server"><span class="prompt">$ </span>claude mcp add medley -- bun /path/to/medley/src/cli.ts mcp</pre>
-          <button class="copy" type="button" data-copy="claude mcp add medley -- bun /path/to/medley/src/cli.ts mcp">copy</button>
+<pre class="medley" aria-label="Add medley to Claude Code as an MCP server"><span class="prompt">$ </span>claude mcp add medley -- bun /path/to/medley/src/medley.ts mcp</pre>
+          <button class="copy" type="button" data-copy="claude mcp add medley -- bun /path/to/medley/src/medley.ts mcp">copy</button>
         </div>
         <p class="note">The MCP tools (browser_goto, browser_click, browser_type, …) talk to the same session as the command line and the terminal UI.</p>
       </div>
@@ -337,9 +337,9 @@ Fernway Outfitters is a made-up shop: a page for trying <span class="ref">[19]</
         <p class="prose">A full-screen terminal UI for people: Tab through refs, Enter to open, <kbd>/</kbd> to find, <kbd>[</kbd> <kbd>]</kbd> for tabs. Press <kbd>v</kbd> to cycle how the page is drawn. The text, the refs and the keys stay the same in every mode.</p>
         <div class="term">
           <div class="screen" id="screen">
-            <img class="on" data-mode="none" src="assets/tui-none.png" alt="No grid: the page as medley's plain text, with colored refs." width="1726" height="1014">
-            <img data-mode="partial" src="assets/tui-partial.png" alt="Partial grid: the three product cards side by side in columns, and the trail table beside its tip." width="1726" height="1014" loading="lazy">
-            <img data-mode="advanced" src="assets/tui-advanced.png" alt="Advanced grid: the page as laid out, with its green top bar and the mountain picture drawn in half-block characters." width="1726" height="1014" loading="lazy">
+            <img class="on" data-mode="none" src="assets/tui-none.png" alt="No grid: the page as medley's plain text, with colored refs." width="1716" height="1018">
+            <img data-mode="partial" src="assets/tui-partial.png" alt="Partial grid: the three product cards side by side in columns, and the trail table beside its tip." width="1716" height="1018" loading="lazy">
+            <img data-mode="advanced" src="assets/tui-advanced.png" alt="Advanced grid: the page as laid out, with its green top bar and the mountain picture drawn in half-block characters." width="1716" height="1018" loading="lazy">
           </div>
         </div>
         <div class="modes" role="group" aria-label="Grid mode">
@@ -380,10 +380,10 @@ Fernway Outfitters is a made-up shop: a page for trying <span class="ref">[19]</
 <pre class="medley" aria-label="Install commands"><span class="prompt">$ </span>git clone https://github.com/nam37/medley.git
 <span class="prompt">$ </span>cd medley
 <span class="prompt">$ </span>bun install
-<span class="prompt">$ </span>bun src/cli.ts tui nam37.github.io/medley/demo/</pre>
-          <button class="copy" type="button" data-copy="git clone https://github.com/nam37/medley.git&#10;cd medley&#10;bun install&#10;bun src/cli.ts tui nam37.github.io/medley/demo/">copy</button>
+<span class="prompt">$ </span>bun src/medley.ts tui nam37.github.io/medley/demo/</pre>
+          <button class="copy" type="button" data-copy="git clone https://github.com/nam37/medley.git&#10;cd medley&#10;bun install&#10;bun src/medley.ts tui nam37.github.io/medley/demo/">copy</button>
         </div>
-        <p class="prose" style="margin-top: 22px">Then <code>bun src/cli.ts goto &lt;url&gt;</code>, <code>snapshot</code>, <code>click &lt;ref&gt;</code> and friends from any shell, or <code>bun src/cli.ts mcp</code> for agents. The <a href="https://github.com/nam37/medley#readme">README</a> lists every command, key and option, and what doesn't work yet.</p>
+        <p class="prose" style="margin-top: 22px">Then <code>bun src/medley.ts goto &lt;url&gt;</code>, <code>snapshot</code>, <code>click &lt;ref&gt;</code> and friends from any shell, or <code>bun src/medley.ts mcp</code> for agents. The <a href="https://github.com/nam37/medley#readme">README</a> lists every command, key and option, and what doesn't work yet.</p>
       </div>
     </section>
   </main>

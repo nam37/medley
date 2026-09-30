@@ -11,11 +11,11 @@
     "url": "https://github.com/nam37/medley.git"
   },
   "bin": {
-    "medley": "src/cli.ts"
+    "medley": "src/medley.ts"
   },
   "scripts": {
-    "tui": "bun src/cli.ts tui",
-    "snapshot": "bun src/cli.ts snapshot",
+    "tui": "bun src/medley.ts tui",
+    "snapshot": "bun src/medley.ts snapshot",
     "test": "bun test/script.ts && bun test/agent.ts && bun test/dev.ts && bun test/frames.ts && bun test/idle.ts && bun test/tui-smoke.ts",
     "test:script": "bun test/script.ts",
     "test:tui": "bun test/tui-smoke.ts",
